@@ -35,5 +35,5 @@ hole/
 .DS_Store
 Thumbs.db
 
-# 로그
+# ROS2 colcon 빌드 결과\nbuild/\ninstall/\nlog/\n\n# 로그
 *.log
