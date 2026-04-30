@@ -16,7 +16,7 @@ ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_CURRENT = 102
 # 허용 전류선 확인하고 전류값을 조절해 주세요. xc330 과한 전류는 모터 손상 및 과열의 원인이 됩니다.
-CURRENT = 50  
+CURRENT = 70  
 
 def to_u16(v):
     return v & 0xFFFF
