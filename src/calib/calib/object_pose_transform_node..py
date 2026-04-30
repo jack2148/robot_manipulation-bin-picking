@@ -12,9 +12,8 @@ from std_msgs.msg import Float64MultiArray
 from ament_index_python.packages import get_package_share_directory
 
 
+# 오일러 tcp를 회전행렬로 변환
 def euler_zyx_deg_to_R(rx_deg, ry_deg, rz_deg):
-    # RB5 rx ry rz 를 회전행렬로 변환
-    # R = Rz @ Ry @ Rx
     rx, ry, rz = np.radians([rx_deg, ry_deg, rz_deg])
 
     Rx = np.array([
@@ -37,10 +36,8 @@ def euler_zyx_deg_to_R(rx_deg, ry_deg, rz_deg):
 
     return Rz @ Ry @ Rx
 
-
+# RB5 tcp를 T로 변환
 def rb5_pose_array_to_T_mm(data):
-    # RB5 현재 TCP pose를 base_T_ee로 변환
-    # data = [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
     if len(data) < 6:
         raise ValueError(
             f"trigger data must have 6 values: "
@@ -55,14 +52,8 @@ def rb5_pose_array_to_T_mm(data):
 
     return T
 
-
+# vision부에서 받은 정보(m단위)를 mm단위 정보로 변환
 def object_json_to_cam_T_obj_mm(obj):
-    """
-    /object_poses JSON object -> camera_T_object
-
-    비전부 position은 m단위 -> mm로 변환.
-    orientation은 PCA axis 벡터 3개를 column으로 쌓아 R_cam_obj 구성.
-    """
     pos = obj["position"]
     ori = obj["orientation"]
 
@@ -78,11 +69,9 @@ def object_json_to_cam_T_obj_mm(obj):
         np.array(ori["axis_z"], dtype=np.float64),
     ])
 
-    # PCA axis 수치 보정
     u, _, vt = np.linalg.svd(R_cam_obj)
     R_cam_obj = u @ vt
 
-    # 오른손 좌표계 보정
     if np.linalg.det(R_cam_obj) < 0:
         R_cam_obj[:, 2] *= -1.0
 
@@ -92,22 +81,11 @@ def object_json_to_cam_T_obj_mm(obj):
 
     return T
 
-
+# pca를 바탕으로 yaw값을 추정
 def yaw_deg_from_R_base_obj(R):
-    """
-    base/world 좌표계 기준 yaw 추출.
-
-    현재 yaw는 point cloud PCA 1번 축(axis_x)이
-    base XY 평면에서 향하는 방향을 의미
-
-    yaw = atan2(R[1, 0], R[0, 0])
-    """
     yaw_rad = np.arctan2(R[1, 0], R[0, 0])
     yaw_deg = np.degrees(yaw_rad)
-
-    # -180 ~ 180 정규화
     yaw_deg = (yaw_deg + 180.0) % 360.0 - 180.0
-
     return float(yaw_deg)
 
 
@@ -118,23 +96,34 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("handeye_result_path", "")
         self.declare_parameter("min_confidence", 0.3)
 
-
-        # sub 토픽
         self.declare_parameter("object_topic", "/object_poses")
-        self.declare_parameter("trigger_topic", "/manipulation/trigger")
 
-        # pub 토픽
+        self.declare_parameter("peg_trigger_topic", "/manipulation/trigger_peg")
+        self.declare_parameter("hole_trigger_topic", "/manipulation/trigger_hole")
+
         self.declare_parameter("peg_output_topic", "/vision/peg_targets")
         self.declare_parameter("hole_output_topic", "/vision/hole_targets")
 
-        # 물체 class에 따른 hole/peg 분류
-        self.declare_parameter("peg_classes", ["cross", "cylinder", "hole"])
-        self.declare_parameter("hole_classes", ["cross_hole", "cylinder_hole", "hole_hole"])
+        self.declare_parameter("peg_classes", ["cylinder", "square", "cross"])
+        self.declare_parameter("hole_classes", ["cylinder_hole", "square_hole", "cross_hole"])
+
+        self.class_to_id = {
+            # peg zone
+            "cylinder": 0,
+            "square": 1,
+            "cross": 2,
+
+            # hole zone
+            "cylinder_hole": 0,
+            "square_hole": 1,
+            "cross_hole": 2,
+        }
 
         self.min_confidence = float(self.get_parameter("min_confidence").value)
-        
+
         object_topic = self.get_parameter("object_topic").value
-        trigger_topic = self.get_parameter("trigger_topic").value
+        peg_trigger_topic = self.get_parameter("peg_trigger_topic").value
+        hole_trigger_topic = self.get_parameter("hole_trigger_topic").value
         peg_output_topic = self.get_parameter("peg_output_topic").value
         hole_output_topic = self.get_parameter("hole_output_topic").value
 
@@ -142,7 +131,6 @@ class ObjectPoseTransformNode(Node):
         self.hole_classes = set(self.get_parameter("hole_classes").value)
 
         self.ee_T_cam = self.load_handeye_result_as_mm()
-
         self.latest_objects = []
 
         # sub
@@ -152,10 +140,16 @@ class ObjectPoseTransformNode(Node):
             self.object_callback,
             10,
         )
-        self.trigger_sub = self.create_subscription(
+        self.peg_trigger_sub = self.create_subscription(
             Float64MultiArray,
-            trigger_topic,
-            self.trigger_callback,
+            peg_trigger_topic,
+            self.peg_trigger_callback,
+            10,
+        )
+        self.hole_trigger_sub = self.create_subscription(
+            Float64MultiArray,
+            hole_trigger_topic,
+            self.hole_trigger_callback,
             10,
         )
 
@@ -165,7 +159,6 @@ class ObjectPoseTransformNode(Node):
             peg_output_topic,
             10,
         )
-
         self.hole_pub = self.create_publisher(
             Float64MultiArray,
             hole_output_topic,
@@ -173,7 +166,14 @@ class ObjectPoseTransformNode(Node):
         )
 
         self.get_logger().info(f"subscribe object topic: {object_topic} [std_msgs/String]")
-        self.get_logger().info(f"subscribe trigger topic: {trigger_topic} "f"[Float64MultiArray: x,y,z,rx,ry,rz]")
+        self.get_logger().info(
+            f"subscribe peg trigger topic: {peg_trigger_topic} "
+            f"[Float64MultiArray: x,y,z,rx,ry,rz]"
+        )
+        self.get_logger().info(
+            f"subscribe hole trigger topic: {hole_trigger_topic} "
+            f"[Float64MultiArray: x,y,z,rx,ry,rz]"
+        )
         self.get_logger().info(f"publish peg topic: {peg_output_topic} [Float64MultiArray]")
         self.get_logger().info(f"publish hole topic: {hole_output_topic} [Float64MultiArray]")
         self.get_logger().info(f"peg_classes: {sorted(list(self.peg_classes))}")
@@ -206,7 +206,6 @@ class ObjectPoseTransformNode(Node):
         if ee_T_cam.shape != (4, 4):
             raise ValueError("ee_T_cam must be 4x4 matrix")
 
-        # hand-eye calibration 결과 translation은 meter 기준이므로 mm로 변환
         ee_T_cam_mm = ee_T_cam.copy()
         ee_T_cam_mm[:3, 3] *= 1000.0
 
@@ -224,9 +223,6 @@ class ObjectPoseTransformNode(Node):
             self.get_logger().warn(f"failed to parse /object_poses JSON: {e}")
 
     def transform_one_object_to_xyyaw(self, obj, base_T_ee):
-        """
-        object 1개를 base 기준 [x_mm, y_mm, yaw_deg]로 변환.
-        """
         cam_T_obj = object_json_to_cam_T_obj_mm(obj)
         base_T_obj = base_T_ee @ self.ee_T_cam @ cam_T_obj
 
@@ -239,73 +235,89 @@ class ObjectPoseTransformNode(Node):
 
         return x_mm, y_mm, yaw_deg
 
-    def trigger_callback(self, trigger_msg):
+    def build_target_data(self, trigger_msg, target_classes):
         if not self.latest_objects:
             self.get_logger().warn("trigger received, but latest_objects is empty")
-            return
+            return []
 
+        base_T_ee = rb5_pose_array_to_T_mm(trigger_msg.data)
+        target_data = []
+
+        for obj in self.latest_objects:
+            cls = obj.get("class", "")
+            conf = float(obj.get("confidence", 0.0))
+
+            if conf < self.min_confidence:
+                continue
+            if cls not in target_classes:
+                continue
+
+            x_mm, y_mm, yaw_deg = self.transform_one_object_to_xyyaw(
+                obj=obj,
+                base_T_ee=base_T_ee,
+            )
+
+            obj_id = self.class_to_id.get(cls, -1)
+            target_data.extend([x_mm, y_mm, yaw_deg, obj_id])
+
+        return target_data
+
+    # 1번 보내면 씹힐수도 있으니깬 귀찮으니 여러번 보내기
+    def publish_repeated(self, publisher, msg, count=5):
+        for _ in range(count):
+            publisher.publish(msg)
+
+    # peg zone 트리거를 받은 경우
+    def peg_trigger_callback(self, trigger_msg):
         try:
-            base_T_ee = rb5_pose_array_to_T_mm(trigger_msg.data)
+            peg_data = self.build_target_data(
+                trigger_msg=trigger_msg,
+                target_classes=self.peg_classes,
+            )
 
-            peg_data = []
-            hole_data = []
+            if not peg_data:
+                self.get_logger().warn("peg trigger received, but no valid peg target")
+                return
 
-            for obj in self.latest_objects:
-                cls = obj.get("class", "")
-                conf = float(obj.get("confidence", 0.0))
+            msg = Float64MultiArray()
+            msg.data = peg_data
+            self.publish_repeated(self.peg_pub, msg, count=10)
 
-                # conf 일정 이하는 무시
-                if conf < self.min_confidence:
-                    continue
-
-                # peg/hole 둘 다 해당 안 되는 class는 무시
-                if cls not in self.peg_classes and cls not in self.hole_classes:
-                    continue
-
-                x_mm, y_mm, yaw_deg = self.transform_one_object_to_xyyaw(
-                    obj=obj,
-                    base_T_ee=base_T_ee,
-                )
-
-                item = [x_mm, y_mm, yaw_deg]
-
-                if cls in self.peg_classes:
-                    peg_data.extend(item)
-
-                if cls in self.hole_classes:
-                    hole_data.extend(item)
-
-            if peg_data:
-                peg_msg = Float64MultiArray()
-                peg_msg.data = peg_data
-                self.peg_pub.publish(peg_msg)
-
-                self.get_logger().info(
-                    f"published /vision/peg_targets | "
-                    f"num_objects={len(peg_data) // 3}, data={peg_data}"
-                )
-            else:
-                self.get_logger().warn("trigger received, but no valid peg target after filtering")
-
-            if hole_data:
-                hole_msg = Float64MultiArray()
-                hole_msg.data = hole_data
-                self.hole_pub.publish(hole_msg)
-
-                self.get_logger().info(
-                    f"published /vision/hole_targets | "
-                    f"num_objects={len(hole_data) // 3}, data={hole_data}"
-                )
-            else:
-                self.get_logger().warn("trigger received, but no valid hole target after filtering")
+            self.get_logger().info(
+                f"published /vision/peg_targets | "
+                f"num_objects={len(peg_data) // 4}, data={peg_data}"
+            )
 
         except Exception as e:
-            self.get_logger().error(f"failed to transform object poses: {e}")
+            self.get_logger().error(f"failed to publish peg targets: {e}")
+
+    # hole zone 트리거를 받은 경우
+    def hole_trigger_callback(self, trigger_msg):
+        try:
+            hole_data = self.build_target_data(
+                trigger_msg=trigger_msg,
+                target_classes=self.hole_classes,
+            )
+
+            if not hole_data:
+                self.get_logger().warn("hole trigger received, but no valid hole target")
+                return
+
+            msg = Float64MultiArray()
+            msg.data = hole_data
+            self.publish_repeated(self.hole_pub, msg, count=10)
+
+            self.get_logger().info(
+                f"published /vision/hole_targets | "
+                f"num_objects={len(hole_data) // 4}, data={hole_data}"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"failed to publish hole targets: {e}")
 
 
 def main(args=None):
     rclpy.init(args=args)
-
     node = ObjectPoseTransformNode()
 
     try:
