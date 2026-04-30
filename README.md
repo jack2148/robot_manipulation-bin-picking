@@ -18,12 +18,14 @@ pip install ultralytics pyrealsense2 opencv-python numpy
 
 ---
 
-## 실행
-
-ROS2 환경에서 RealSense D455를 연결한 후 실행합니다.
+## 빌드 및 실행
 
 ```bash
-python pose_publisher.py
+# 워크스페이스 루트에서
+colcon build
+source install/setup.bash
+
+ros2 run vision pose_publisher
 ```
 
 - 토픽: `/object_poses` (`std_msgs/String`, JSON 형식)
