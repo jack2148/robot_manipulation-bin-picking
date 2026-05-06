@@ -142,13 +142,15 @@ class RobotMotion:
         return tcp_info[:6]
 
     def force_flat_gripper_pose(self, pose: np.ndarray) -> np.ndarray:
+        """
+        x, y, z는 유지한다.
+        rx, ry는 수평 자세로 강제한다.
+        rz는 vision yaw 보정값이므로 유지한다.
+        """
         pose = np.array(pose, dtype=float).copy()
 
         pose[3] = self.ctx.flat_tcp_rx_deg
         pose[4] = self.ctx.flat_tcp_ry_deg
-
-        # 중요:
-        # pose[5]는 vision yaw가 들어가는 rz이므로 덮어쓰지 않는다.
 
         return pose
 

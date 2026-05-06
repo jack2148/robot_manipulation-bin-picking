@@ -1,11 +1,6 @@
 """
-# 1. 기존 빌드, 설치, 로그 폴더 삭제 (충돌의 원인을 원천 차단)
 rm -rf build/ install/ log/
-
-# 2. 원하는 패키지만 선택하여 다시 빌드
 colcon build --symlink-install --packages-select vision calib control bringup
-
-# 3. 환경 설정 스크립트 반영
 source install/setup.bash
 
 """
@@ -63,8 +58,8 @@ def generate_launch_description():
         'peg_output_topic': '/vision/peg_targets',
         'hole_output_topic': '/vision/hole_targets',
 
-        'peg_classes': ['cylinder', 'square', 'cross'],
-        'hole_classes': ['cylinder_hole', 'square_hole', 'cross_hole'],
+        'peg_classes': ['cylinder', 'hole', 'cross'],
+        'hole_classes': ['hole_hole', 'square_hole', 'cross_hole'],
     }
 
     object_pose_transform_node = Node(

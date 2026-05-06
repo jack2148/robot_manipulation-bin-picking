@@ -205,20 +205,22 @@ class VisionInterface:
 
         return False
 
-    def _xyyaw_to_tcp_pose(self, x: float, y: float, yaw: float) -> np.ndarray:
+    
+    def _xyyaw_to_tcp_pose(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        object_id: int,
+    ) -> np.ndarray:
         """
-        [x, y, yaw] -> [x, y, z, rx, ry, rz]
+        [x, y, yaw, id] -> [x, y, z, rx, ry, rz]
 
-        x, y:
-            vision에서 받은 목표 위치
-
-        yaw:
-            vision에서 받은 물체 회전각.
-            MoveL의 rz에 넣는다.
-
-        z:
-            이후 state에서 덮어씀.
+        yaw는 object_id에 따라 보정한 뒤 rz에 넣는다.
+        z는 이후 상태머신에서 작업 높이에 맞게 덮어쓴다.
         """
+        corrected_yaw = self._correct_yaw_by_object_id(yaw, object_id)
+
         return np.array(
             [
                 x,
@@ -226,10 +228,11 @@ class VisionInterface:
                 0.0,
                 self.ctx.flat_tcp_rx_deg,
                 self.ctx.flat_tcp_ry_deg,
-                float(yaw),
+                corrected_yaw,
             ],
             dtype=float,
         )
+
     # ------------------------------------------------------------------
     # vision inspect
     # ------------------------------------------------------------------
@@ -250,7 +253,7 @@ class VisionInterface:
 
         peg_candidates = [
             VisionTarget(
-                pose=self._xyyaw_to_tcp_pose(x, y, yaw),
+                pose=self._xyyaw_to_tcp_pose(x, y, yaw, object_id),
                 object_id=object_id,
             )
             for x, y, yaw, object_id in self.latest_peg_xyyawid
@@ -298,3 +301,42 @@ class VisionInterface:
 
         self.node.get_logger().info(f"[VISION] detected hole count = {len(hole_candidates)}")
         return hole_candidates
+
+    def _correct_yaw_by_object_id(self, yaw: float, object_id: int) -> float:
+        """
+        vision에서 받은 yaw를 object id에 따라 보정한다.
+
+        id 의미:
+            0: 원
+            1: 사각형
+            2: 십자가
+
+        보정 규칙:
+            원      : yaw 그대로 사용
+            사각형  : yaw % 90
+            십자가  : (yaw % 90) - 45
+        """
+        yaw = float(yaw)
+
+        if object_id == 0:
+            corrected_yaw = yaw
+
+        elif object_id == 1:
+            corrected_yaw = yaw % 90.0
+
+        elif object_id == 2:
+            corrected_yaw = (yaw % 90.0) - 45.0
+
+        else:
+            self.node.get_logger().warn(
+                f"[VISION] Unknown object id for yaw correction: {object_id}. "
+                f"Use raw yaw = {yaw}"
+            )
+            corrected_yaw = yaw
+
+        self.node.get_logger().info(
+            f"[VISION] yaw correction: "
+            f"id={object_id}, raw_yaw={yaw:.3f}, corrected_yaw={corrected_yaw:.3f}"
+        )
+
+        return corrected_yaw

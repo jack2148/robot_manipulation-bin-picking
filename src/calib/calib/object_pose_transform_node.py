@@ -110,7 +110,7 @@ class ObjectPoseTransformNode(Node):
         self.class_to_id = {
             # peg zone
             "cylinder": 0,
-            "square": 1,
+            "hole": 1,
             "cross": 2,
 
             # hole zone
