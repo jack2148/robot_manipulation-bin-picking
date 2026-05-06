@@ -72,14 +72,14 @@ class TaskContext:
     move_l_speed: float = 80.0
     move_l_acc: float = 120.0
 
-    # ===== peg pick 전용 MoveL 속도 =====
-    # MOVE_TO_TARGET_PEG: peg 잡기 전, 조금 높은 접근 위치로 이동할 때 사용
-    pick_approach_move_l_speed: float = 40.0
-    pick_approach_move_l_acc: float = 80.0
+    # ===== 접근/하강 MoveL 공통 속도 =====
+    # MOVE_TO_TARGET_PEG, MOVE_TO_TARGET_HOLE 에서 사용
+    approach_move_l_speed: float = 40.0
+    approach_move_l_acc: float = 80.0
 
-    # DESCEND_TO_PEG: 그리퍼 닫기 직전, peg 잡는 높이로 내려갈 때 사용
-    pick_descend_move_l_speed: float = 8.0
-    pick_descend_move_l_acc: float = 40.0
+    # DESCEND_TO_PEG, DESCEND_TO_HOLE 에서 사용
+    descend_move_l_speed: float = 8.0
+    descend_move_l_acc: float = 40.0
 
     # 기존 rbpodo wait는 더 이상 완료 판단에 사용하지 않지만 파라미터는 남겨둠
     move_start_timeout_sec: float = 0.5

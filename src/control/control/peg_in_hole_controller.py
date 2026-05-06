@@ -68,11 +68,13 @@ class PegInHoleController(Node):
                 ("move_l_speed", 80.0),
                 ("move_l_acc", 120.0),
 
-                # peg pick 전용 MoveL 속도
-                ("pick_approach_move_l_speed", 40.0),
-                ("pick_approach_move_l_acc", 80.0),
-                ("pick_descend_move_l_speed", 8.0),
-                ("pick_descend_move_l_acc", 40.0),
+                # peg/hole 공통 접근 MoveL 속도
+                ("approach_move_l_speed", 40.0),
+                ("approach_move_l_acc", 80.0),
+
+                # peg/hole 공통 하강 MoveL 속도
+                ("descend_move_l_speed", 8.0),
+                ("descend_move_l_acc", 40.0),
 
                 ("move_start_timeout_sec", 0.5),
 
@@ -135,18 +137,10 @@ class PegInHoleController(Node):
             move_l_speed=self._get_float_param("move_l_speed"),
             move_l_acc=self._get_float_param("move_l_acc"),
 
-            pick_approach_move_l_speed=self._get_float_param(
-                "pick_approach_move_l_speed"
-            ),
-            pick_approach_move_l_acc=self._get_float_param(
-                "pick_approach_move_l_acc"
-            ),
-            pick_descend_move_l_speed=self._get_float_param(
-                "pick_descend_move_l_speed"
-            ),
-            pick_descend_move_l_acc=self._get_float_param(
-                "pick_descend_move_l_acc"
-            ),
+            approach_move_l_speed=self._get_float_param("approach_move_l_speed"),
+            approach_move_l_acc=self._get_float_param("approach_move_l_acc"),
+            descend_move_l_speed=self._get_float_param("descend_move_l_speed"),
+            descend_move_l_acc=self._get_float_param("descend_move_l_acc"),
 
             move_start_timeout_sec=self._get_float_param("move_start_timeout_sec"),
 
@@ -210,14 +204,14 @@ class PegInHoleController(Node):
             f"{self.ctx.flat_tcp_rz_deg}]"
         )
         self.get_logger().info(
-            f"Pick approach MoveL speed/acc: "
-            f"{self.ctx.pick_approach_move_l_speed}, "
-            f"{self.ctx.pick_approach_move_l_acc}"
+            f"Approach MoveL speed/acc: "
+            f"{self.ctx.approach_move_l_speed}, "
+            f"{self.ctx.approach_move_l_acc}"
         )
         self.get_logger().info(
-            f"Pick descend MoveL speed/acc: "
-            f"{self.ctx.pick_descend_move_l_speed}, "
-            f"{self.ctx.pick_descend_move_l_acc}"
+            f"Descend MoveL speed/acc: "
+            f"{self.ctx.descend_move_l_speed}, "
+            f"{self.ctx.descend_move_l_acc}"
         )
 
     # ------------------------------------------------------------------
@@ -358,11 +352,10 @@ class PegInHoleController(Node):
             )
 
             # peg 잡기 전, 조금 높은 접근 위치로 이동
-            # 이 구간은 그리퍼가 아직 peg에 닿지 않으므로 상대적으로 빠르게 이동 가능
             self.motion.move_l_and_wait(
                 target_pose,
-                speed=self.ctx.pick_approach_move_l_speed,
-                acc=self.ctx.pick_approach_move_l_acc,
+                speed=self.ctx.approach_move_l_speed,
+                acc=self.ctx.approach_move_l_acc,
             )
             self.state = TaskState.DESCEND_TO_PEG
 
@@ -373,12 +366,11 @@ class PegInHoleController(Node):
             target_pose = self.ctx.current_peg_pick_pose.copy()
             target_pose[2] = self.ctx.pick_down_target_z_mm
 
-            # 그리퍼 닫기 직전, peg 잡는 높이로 내려가는 구간
-            # 충돌과 위치 오차를 줄이기 위해 접근 이동보다 느리게 이동
+            # 그리퍼 닫기 직전, peg 잡는 높이로 하강
             self.motion.move_l_and_wait(
                 target_pose,
-                speed=self.ctx.pick_descend_move_l_speed,
-                acc=self.ctx.pick_descend_move_l_acc,
+                speed=self.ctx.descend_move_l_speed,
+                acc=self.ctx.descend_move_l_acc,
             )
             self.state = TaskState.GRASP_PEG
 
@@ -419,7 +411,12 @@ class PegInHoleController(Node):
             target_pose = self.ctx.current_hole_place_pose.copy()
             target_pose[2] = self.ctx.place_approach_target_z_mm
 
-            self.motion.move_l_and_wait(target_pose)
+            # hole 위 접근 위치로 이동
+            self.motion.move_l_and_wait(
+                target_pose,
+                speed=self.ctx.approach_move_l_speed,
+                acc=self.ctx.approach_move_l_acc,
+            )
             self.state = TaskState.DESCEND_TO_HOLE
 
         elif self.state == TaskState.DESCEND_TO_HOLE:
@@ -429,7 +426,12 @@ class PegInHoleController(Node):
             target_pose = self.ctx.current_hole_place_pose.copy()
             target_pose[2] = self.ctx.place_down_target_z_mm
 
-            self.motion.move_l_and_wait(target_pose)
+            # peg를 hole에 넣기 직전, 삽입 높이로 하강
+            self.motion.move_l_and_wait(
+                target_pose,
+                speed=self.ctx.descend_move_l_speed,
+                acc=self.ctx.descend_move_l_acc,
+            )
             self.state = TaskState.RELEASE_PEG
 
         elif self.state == TaskState.RELEASE_PEG:

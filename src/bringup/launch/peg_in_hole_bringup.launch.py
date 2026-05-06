@@ -106,17 +106,17 @@ def generate_launch_description():
         'move_j_acc': 60.0,
 
         # 기본 MoveL 속도
-        # 아래 pick 전용 속도를 따로 지정하지 않은 다른 MoveL에서 사용됨
+        # LIFT_WITH_PEG, LIFT_FROM_HOLE 같은 일반 MoveL에서 사용
         'move_l_speed': 8.0,
         'move_l_acc': 80.0,
 
-        # peg 잡기 전, 조금 높은 접근 위치로 이동하는 MoveL 속도
-        'pick_approach_move_l_speed': 40.0,
-        'pick_approach_move_l_acc': 80.0,
+        # peg/hole 위 접근 위치로 이동할 때 사용
+        'approach_move_l_speed': 40.0,
+        'approach_move_l_acc': 80.0,
 
-        # 그리퍼 닫기 직전, peg 잡는 높이로 하강하는 MoveL 속도
-        'pick_descend_move_l_speed': 8.0,
-        'pick_descend_move_l_acc': 40.0,
+        # peg 잡기 직전, hole 삽입 직전 하강할 때 사용
+        'descend_move_l_speed': 8.0,
+        'descend_move_l_acc': 40.0,
 
         # ===== 비전 토픽 =====
         'peg_targets_topic': '/vision/peg_targets',
