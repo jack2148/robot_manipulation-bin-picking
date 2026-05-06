@@ -36,13 +36,28 @@ class PosePublisher(Node):
         self.pipeline.start(config)
 
         profile = self.pipeline.get_active_profile()
-        depth_profile = rs.video_stream_profile(
-            profile.get_stream(rs.stream.depth)
+
+        # depth를 color frame에 align해서 쓸 것이므로,
+        # 3D 복원 intrinsics도 color intrinsics를 사용해야 함
+        color_profile = rs.video_stream_profile(
+            profile.get_stream(rs.stream.color)
         )
-        self.intrinsics = depth_profile.get_intrinsics()
+        self.intrinsics = color_profile.get_intrinsics()
+
+        # RealSense depth scale 사용
+        depth_sensor = profile.get_device().first_depth_sensor()
+        self.depth_scale = depth_sensor.get_depth_scale()
 
         align_to = rs.stream.color
         self.align = rs.align(align_to)
+
+        self.get_logger().info(
+            f"color intrinsics: fx={self.intrinsics.fx:.2f}, "
+            f"fy={self.intrinsics.fy:.2f}, "
+            f"ppx={self.intrinsics.ppx:.2f}, "
+            f"ppy={self.intrinsics.ppy:.2f}, "
+            f"depth_scale={self.depth_scale:.6f}"
+        )
 
         self.get_logger().info("PosePublisher ready")
 
@@ -53,7 +68,7 @@ class PosePublisher(Node):
         ppy = self.intrinsics.ppy
 
         rows, cols = np.where(mask_img > 0)
-        z_vals = depth_image[rows, cols].astype(float) * 0.001  # mm → m
+        z_vals = depth_image[rows, cols].astype(float) * self.depth_scale
         valid = z_vals > 0
         rows, cols, z_vals = rows[valid], cols[valid], z_vals[valid]
 
