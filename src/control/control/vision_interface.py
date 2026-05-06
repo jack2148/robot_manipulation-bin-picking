@@ -41,7 +41,7 @@ class VisionInterface:
         self.hole_targets_topic = hole_targets_topic
         self.trigger_peg_topic = trigger_peg_topic
         self.trigger_hole_topic = trigger_hole_topic
-        self.camera_settle_sec = float(camera_settle_sec)
+        self.camera_settle_sec = 3.0#float(camera_settle_sec)
 
         self.latest_peg_xyyawid: list[tuple[float, float, float, int]] = []
         self.latest_hole_xyyawid: list[tuple[float, float, float, int]] = []
@@ -209,15 +209,12 @@ class VisionInterface:
         """
         [x, y, yaw] -> [x, y, z, rx, ry, rz]
 
-        그리퍼를 항상 땅과 평행하게 유지하기 위해
-        vision yaw는 TCP 자세에 사용하지 않는다.
-
         x, y:
             vision에서 받은 목표 위치
 
         yaw:
-            현재는 사용하지 않음.
-            필요하면 나중에 gripper yaw 정렬용으로 별도 로직에서 사용.
+            vision에서 받은 물체 회전각.
+            MoveL의 rz에 넣는다.
 
         z:
             이후 state에서 덮어씀.
@@ -229,11 +226,10 @@ class VisionInterface:
                 0.0,
                 self.ctx.flat_tcp_rx_deg,
                 self.ctx.flat_tcp_ry_deg,
-                self.ctx.flat_tcp_rz_deg,
+                float(yaw),
             ],
             dtype=float,
         )
-
     # ------------------------------------------------------------------
     # vision inspect
     # ------------------------------------------------------------------

@@ -142,17 +142,13 @@ class RobotMotion:
         return tcp_info[:6]
 
     def force_flat_gripper_pose(self, pose: np.ndarray) -> np.ndarray:
-        """
-        어떤 TCP pose가 들어와도 MoveL 실행 전 그리퍼 자세를 항상 수평 RPY로 강제한다.
-
-        x, y, z는 유지하고,
-        rx, ry, rz만 flat_tcp_* 값으로 덮어쓴다.
-        """
         pose = np.array(pose, dtype=float).copy()
 
         pose[3] = self.ctx.flat_tcp_rx_deg
         pose[4] = self.ctx.flat_tcp_ry_deg
-        pose[5] = self.ctx.flat_tcp_rz_deg
+
+        # 중요:
+        # pose[5]는 vision yaw가 들어가는 rz이므로 덮어쓰지 않는다.
 
         return pose
 

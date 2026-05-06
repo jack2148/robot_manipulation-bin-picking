@@ -1,6 +1,11 @@
 """
-cd ~/course/robot_manipulation-bin-picking
+# 1. 기존 빌드, 설치, 로그 폴더 삭제 (충돌의 원인을 원천 차단)
+rm -rf build/ install/ log/
+
+# 2. 원하는 패키지만 선택하여 다시 빌드
 colcon build --symlink-install --packages-select vision calib control bringup
+
+# 3. 환경 설정 스크립트 반영
 source install/setup.bash
 
 """
@@ -16,7 +21,7 @@ def generate_launch_description():
     # Path settings
     # ============================================================
     handeye_result_path = (
-        '/home/choisuhyun/course/robot_manipulation-bin-picking/'
+        '/home/chu/robot_manipulation-bin-picking/'
         'src/calib/config/handeye_capture_rs/handeye_result.json'
     )
 
