@@ -17,6 +17,7 @@ env/
 # YOLO 학습 결과
 runs/
 *.onnx
+*.png
 
 # 데이터셋
 dataset*/
