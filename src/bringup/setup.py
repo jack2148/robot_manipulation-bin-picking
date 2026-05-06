@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 from glob import glob
 import os
 
-package_name = 'calib'
+package_name = 'bringup'
 
 setup(
     name=package_name,
@@ -15,18 +15,12 @@ setup(
 
         # launch 파일 설치
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-
-        # handeye config json 설치
-        (
-            os.path.join('share', package_name, 'config', 'handeye_capture_rs'),
-            glob('config/handeye_capture_rs/*.json')
-        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='choisuhyun',
     maintainer_email='chsuk02@hanyang.ac.kr',
-    description='Calibration and object pose transform package',
+    description='Bringup launch package for peg-in-hole system',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -35,7 +29,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'object_pose_transform_node = calib.object_pose_transform_node:main',
         ],
     },
 )
