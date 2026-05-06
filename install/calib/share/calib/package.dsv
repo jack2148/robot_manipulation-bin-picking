@@ -1,0 +1,6 @@
+source;share/calib/hook/pythonpath.ps1
+source;share/calib/hook/pythonpath.dsv
+source;share/calib/hook/pythonpath.sh
+source;share/calib/hook/ament_prefix_path.ps1
+source;share/calib/hook/ament_prefix_path.dsv
+source;share/calib/hook/ament_prefix_path.sh

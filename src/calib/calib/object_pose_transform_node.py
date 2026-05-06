@@ -258,7 +258,12 @@ class ObjectPoseTransformNode(Node):
             )
 
             obj_id = self.class_to_id.get(cls, -1)
-            target_data.extend([x_mm, y_mm, yaw_deg, obj_id])
+            target_data.extend([
+                float(x_mm),
+                float(y_mm),
+                float(yaw_deg),
+                float(obj_id),
+            ])
 
         return target_data
 
@@ -326,7 +331,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

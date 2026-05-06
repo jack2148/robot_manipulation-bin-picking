@@ -172,13 +172,14 @@ class RobotMotion:
         while rclpy.ok():
             current_joint = self.get_current_joint()
             joint_error = self.angle_abs_error_deg(current_joint, target_joint)
-
+            """
             self.node.get_logger().info(
                 f"[WAIT_JOINT] current = {current_joint}, "
                 f"target = {target_joint}, "
                 f"error = {joint_error}, "
                 f"stable = {stable_count}/{self.ctx.joint_stable_count_required}"
             )
+            """
 
             if np.all(joint_error <= self.ctx.joint_tol_deg):
                 stable_count += 1
