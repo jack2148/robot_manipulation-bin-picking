@@ -102,10 +102,10 @@ def generate_launch_description():
         'place_up_target_z_mm': 110.0,
 
         # ===== 속도/가속도 =====
-        'move_j_speed': 30.0,
-        'move_j_acc': 40.0,
-        'move_l_speed': 40.0,
-        'move_l_acc': 60.0,
+        'move_j_speed': 60.0,
+        'move_j_acc': 60.0,
+        'move_l_speed': 8.0,
+        'move_l_acc': 80.0,
 
         # ===== 비전 토픽 =====
         'peg_targets_topic': '/vision/peg_targets',

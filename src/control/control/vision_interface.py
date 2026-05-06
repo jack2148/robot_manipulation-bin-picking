@@ -41,7 +41,7 @@ class VisionInterface:
         self.hole_targets_topic = hole_targets_topic
         self.trigger_peg_topic = trigger_peg_topic
         self.trigger_hole_topic = trigger_hole_topic
-        self.camera_settle_sec = 0.5#float(camera_settle_sec)
+        self.camera_settle_sec = float(camera_settle_sec)
 
         self.latest_peg_xyyawid: list[tuple[float, float, float, int]] = []
         self.latest_hole_xyyawid: list[tuple[float, float, float, int]] = []
