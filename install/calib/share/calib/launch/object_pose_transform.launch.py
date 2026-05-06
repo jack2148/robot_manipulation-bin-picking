@@ -1,1 +1,0 @@
-/home/chu/robot_manipulation-bin-picking/build/calib/launch/object_pose_transform.launch.py

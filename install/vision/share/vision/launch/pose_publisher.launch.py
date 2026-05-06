@@ -1,1 +1,0 @@
-/home/chu/robot_manipulation-bin-picking/build/vision/launch/pose_publisher.launch.py

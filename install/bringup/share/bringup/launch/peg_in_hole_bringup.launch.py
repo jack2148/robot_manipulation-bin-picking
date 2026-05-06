@@ -1,1 +1,0 @@
-/home/chu/robot_manipulation-bin-picking/build/bringup/launch/peg_in_hole_bringup.launch.py
