@@ -41,7 +41,7 @@ class VisionInterface:
         self.hole_targets_topic = hole_targets_topic
         self.trigger_peg_topic = trigger_peg_topic
         self.trigger_hole_topic = trigger_hole_topic
-        self.camera_settle_sec = 3.0#float(camera_settle_sec)
+        self.camera_settle_sec = 0.5#float(camera_settle_sec)
 
         self.latest_peg_xyyawid: list[tuple[float, float, float, int]] = []
         self.latest_hole_xyyawid: list[tuple[float, float, float, int]] = []
@@ -313,8 +313,8 @@ class VisionInterface:
 
         보정 규칙:
             원      : yaw 그대로 사용
-            사각형  : yaw % 90
-            십자가  : (yaw % 90) - 45
+            사각형  : (yaw % 90) + 45
+            십자가  : yaw % 90
         """
         yaw = float(yaw)
 
@@ -322,10 +322,10 @@ class VisionInterface:
             corrected_yaw = yaw
 
         elif object_id == 1:
-            corrected_yaw = yaw % 90.0
+            corrected_yaw = (yaw % 90.0) + 45.0
 
         elif object_id == 2:
-            corrected_yaw = (yaw % 90.0) - 45.0
+            corrected_yaw = yaw % 90.0
 
         else:
             self.node.get_logger().warn(
