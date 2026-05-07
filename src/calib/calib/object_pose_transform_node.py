@@ -460,17 +460,22 @@ class ObjectPoseTransformNode(Node):
             should_exclude = False
 
             for obj in object_targets:
-                if int(ins["id"]) != int(obj["id"]):
-                    continue
+                dist_mm = float(np.hypot(
+                    ins["x"] - obj["x"],
+                    ins["y"] - obj["y"],
+                ))
 
-                dist_mm = float(np.hypot(ins["x"] - obj["x"], ins["y"] - obj["y"]))
-
+                # id 상관없이 같은 위치에 object가 있으면 insert 제거
                 if dist_mm < exclude_dist_mm:
                     should_exclude = True
+
                     self.get_logger().info(
                         f"exclude insert target | "
-                        f"insert_class={ins['class']} object_class={obj['class']} "
-                        f"id={ins['id']} dist={dist_mm:.1f}mm"
+                        f"insert_class={ins['class']} "
+                        f"object_class={obj['class']} "
+                        f"insert_id={ins['id']} "
+                        f"object_id={obj['id']} "
+                        f"dist={dist_mm:.1f}mm"
                     )
                     break
 
@@ -478,7 +483,9 @@ class ObjectPoseTransformNode(Node):
                 valid_insert_targets.append(ins)
 
         if not valid_insert_targets:
-            self.get_logger().warn("hole trigger: no valid insert target after collection/filtering")
+            self.get_logger().warn(
+                "hole trigger: no valid insert target after collection/filtering"
+            )
             self.reset_pending()
             return
 
