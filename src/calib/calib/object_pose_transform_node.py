@@ -104,6 +104,8 @@ class ObjectPoseTransformNode(Node):
 
         self.declare_parameter("exclude_dist_mm", 30.0)
         self.declare_parameter("insert_duplicate_dist_mm", 10.0)
+        self.declare_parameter("collect_frames", 5)
+        self.declare_parameter("detect_mode_settle_sec", 0.3)
 
         self.class_to_id = {
             "cylinder": 0,
@@ -132,20 +134,18 @@ class ObjectPoseTransformNode(Node):
         self.pending_trigger_msg = None
         self.pending_object_targets = None
 
+        self.collect_count = 0
+        self.collected_targets = []
+        self.mode_switch_time = None
+
         self.detect_mode_pub = self.create_publisher(String, self.detect_mode_topic, 10)
 
         self.object_sub = self.create_subscription(
-            String,
-            self.object_topic,
-            self.object_callback,
-            10,
+            String, self.object_topic, self.object_callback, 10
         )
 
         self.insert_sub = self.create_subscription(
-            String,
-            self.insert_topic,
-            self.insert_callback,
-            10,
+            String, self.insert_topic, self.insert_callback, 10
         )
 
         self.peg_trigger_sub = self.create_subscription(
@@ -162,30 +162,23 @@ class ObjectPoseTransformNode(Node):
             10,
         )
 
-        self.peg_pub = self.create_publisher(
-            Float64MultiArray,
-            self.peg_output_topic,
-            10,
-        )
+        self.peg_pub = self.create_publisher(Float64MultiArray, self.peg_output_topic, 10)
+        self.hole_pub = self.create_publisher(Float64MultiArray, self.hole_output_topic, 10)
 
-        self.hole_pub = self.create_publisher(
-            Float64MultiArray,
-            self.hole_output_topic,
-            10,
-        )
+    def now_sec(self):
+        return self.get_clock().now().nanoseconds * 1e-9
 
-        self.get_logger().info(f"subscribe object topic: {self.object_topic}")
-        self.get_logger().info(f"subscribe insert topic: {self.insert_topic}")
-        self.get_logger().info(f"publish detect mode topic: {self.detect_mode_topic}")
-        self.get_logger().info(f"publish peg topic: {self.peg_output_topic}")
-        self.get_logger().info(f"publish hole topic: {self.hole_output_topic}")
-        self.get_logger().info(
-            f"exclude_dist_mm: {float(self.get_parameter('exclude_dist_mm').value):.1f}"
-        )
-        self.get_logger().info(
-            f"insert_duplicate_dist_mm: "
-            f"{float(self.get_parameter('insert_duplicate_dist_mm').value):.1f}"
-        )
+    def is_settle_done(self):
+        if self.mode_switch_time is None:
+            return True
+
+        settle_sec = float(self.get_parameter("detect_mode_settle_sec").value)
+        return (self.now_sec() - self.mode_switch_time) >= settle_sec
+
+    def start_collect(self):
+        self.collect_count = 0
+        self.collected_targets = []
+        self.mode_switch_time = self.now_sec()
 
     def publish_detect_mode(self, mode):
         msg = String()
@@ -212,20 +205,9 @@ class ObjectPoseTransformNode(Node):
         with open(result_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if "ee_T_cam" not in data:
-            raise KeyError("handeye_result.json must contain key: ee_T_cam")
-
         ee_T_cam = np.array(data["ee_T_cam"], dtype=np.float64)
-
-        if ee_T_cam.shape != (4, 4):
-            raise ValueError("ee_T_cam must be 4x4 matrix")
-
         ee_T_cam_mm = ee_T_cam.copy()
         ee_T_cam_mm[:3, 3] *= 1000.0
-
-        self.get_logger().info(f"loaded handeye result: {result_path}")
-        self.get_logger().info(f"ee_T_cam [translation=mm]:\n{ee_T_cam_mm}")
-
         return ee_T_cam_mm
 
     def object_callback(self, msg):
@@ -238,10 +220,9 @@ class ObjectPoseTransformNode(Node):
             return
 
         if self.pending_task == "peg_wait_object":
-            self.process_peg_after_object_update()
-
+            self.collect_peg_object_frame()
         elif self.pending_task == "hole_wait_object":
-            self.process_hole_after_object_update()
+            self.collect_hole_object_frame()
 
     def insert_callback(self, msg):
         try:
@@ -253,7 +234,7 @@ class ObjectPoseTransformNode(Node):
             return
 
         if self.pending_task == "hole_wait_insert":
-            self.process_hole_after_insert_update()
+            self.collect_hole_insert_frame()
 
     def transform_one_object_to_xyyaw(self, obj, base_T_ee):
         cam_T_obj = object_json_to_cam_T_obj_mm(obj)
@@ -273,7 +254,6 @@ class ObjectPoseTransformNode(Node):
             yaw_source = "pca"
 
         yaw_deg = (yaw_deg + 180.0) % 360.0 - 180.0
-
         return x_mm, y_mm, float(yaw_deg), yaw_source
 
     def object_to_target_dict(self, obj, base_T_ee):
@@ -286,10 +266,7 @@ class ObjectPoseTransformNode(Node):
         if cls not in self.class_to_id:
             return None
 
-        x_mm, y_mm, yaw_deg, yaw_source = self.transform_one_object_to_xyyaw(
-            obj=obj,
-            base_T_ee=base_T_ee,
-        )
+        x_mm, y_mm, yaw_deg, yaw_source = self.transform_one_object_to_xyyaw(obj, base_T_ee)
 
         return {
             "class": cls,
@@ -303,38 +280,32 @@ class ObjectPoseTransformNode(Node):
 
     def make_targets_from_objects(self, objects, base_T_ee):
         targets = []
-
         for obj in objects:
             target = self.object_to_target_dict(obj, base_T_ee)
             if target is not None:
                 targets.append(target)
-
         return targets
 
     def suppress_duplicate_targets_by_conf(self, targets, dist_thresh_mm):
         kept = []
-
-        targets_sorted = sorted(
-            targets,
-            key=lambda t: float(t["confidence"]),
-            reverse=True,
-        )
+        targets_sorted = sorted(targets, key=lambda t: float(t["confidence"]), reverse=True)
 
         for t in targets_sorted:
             duplicate = False
 
             for k in kept:
+                if int(t["id"]) != int(k["id"]):
+                    continue
+
                 dist_mm = float(np.hypot(t["x"] - k["x"], t["y"] - k["y"]))
 
                 if dist_mm < dist_thresh_mm:
                     duplicate = True
                     self.get_logger().info(
-                        f"suppress duplicate insert | "
-                        f"drop_class={t['class']} "
-                        f"drop_conf={t['confidence']:.2f} "
-                        f"keep_class={k['class']} "
-                        f"keep_conf={k['confidence']:.2f} "
-                        f"dist={dist_mm:.1f} mm"
+                        f"suppress duplicate target | "
+                        f"drop={t['class']} conf={t['confidence']:.2f} "
+                        f"keep={k['class']} conf={k['confidence']:.2f} "
+                        f"id={t['id']} dist={dist_mm:.1f}mm"
                     )
                     break
 
@@ -345,15 +316,8 @@ class ObjectPoseTransformNode(Node):
 
     def targets_to_msg_data(self, targets):
         data = []
-
         for t in targets:
-            data.extend([
-                float(t["x"]),
-                float(t["y"]),
-                float(t["yaw"]),
-                float(t["id"]),
-            ])
-
+            data.extend([float(t["x"]), float(t["y"]), float(t["yaw"]), float(t["id"])])
         return data
 
     def publish_repeated(self, publisher, msg, count=10):
@@ -364,204 +328,171 @@ class ObjectPoseTransformNode(Node):
         self.pending_task = None
         self.pending_trigger_msg = None
         self.pending_object_targets = None
+        self.collect_count = 0
+        self.collected_targets = []
+        self.mode_switch_time = None
 
     def peg_trigger_callback(self, trigger_msg):
         if self.pending_task is not None:
-            self.get_logger().warn(
-                f"ignore peg trigger because pending_task is running: {self.pending_task}"
-            )
+            self.get_logger().warn(f"ignore peg trigger: pending_task={self.pending_task}")
             return
 
         self.pending_trigger_msg = trigger_msg
         self.pending_task = "peg_wait_object"
-
+        self.start_collect()
         self.publish_detect_mode("object")
 
+    def collect_peg_object_frame(self):
+        if not self.is_settle_done():
+            return
+
+        base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
+        targets = self.make_targets_from_objects(self.latest_objects, base_T_ee)
+        self.collected_targets.extend(targets)
+        self.collect_count += 1
+
+        collect_frames = int(self.get_parameter("collect_frames").value)
         self.get_logger().info(
-            "peg trigger received → switch detect_mode=object → wait fresh /object_poses"
+            f"[COLLECT PEG] frame={self.collect_count}/{collect_frames}, "
+            f"targets={len(targets)}, total={len(self.collected_targets)}"
         )
 
-    def process_peg_after_object_update(self):
-        try:
-            if self.pending_trigger_msg is None:
-                self.reset_pending()
-                return
+        if self.collect_count < collect_frames:
+            return
 
-            if not self.latest_objects:
-                self.get_logger().warn(
-                    "fresh /object_poses received, but objects is empty"
-                )
-                self.reset_pending()
-                return
+        final_targets = self.suppress_duplicate_targets_by_conf(
+            self.collected_targets,
+            dist_thresh_mm=float(self.get_parameter("insert_duplicate_dist_mm").value),
+        )
 
-            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
-
-            peg_targets = self.make_targets_from_objects(
-                self.latest_objects,
-                base_T_ee,
-            )
-
-            if not peg_targets:
-                self.get_logger().warn(
-                    "peg trigger received, but no valid target from fresh /object_poses"
-                )
-                self.reset_pending()
-                return
-
-            msg = Float64MultiArray()
-            msg.data = self.targets_to_msg_data(peg_targets)
-
-            self.get_logger().info(
-                f"[PUBLISH] topic={self.peg_output_topic} "
-                f"type=object "
-                f"targets={peg_targets} "
-                f"data={msg.data}"
-            )
-
-            self.publish_repeated(self.peg_pub, msg, count=10)
-
-            self.get_logger().info(
-                f"published {self.peg_output_topic} | "
-                f"num_objects={len(peg_targets)}, data={msg.data}"
-            )
-
+        if not final_targets:
+            self.get_logger().warn("peg trigger: no valid target after 5-frame collection")
             self.reset_pending()
+            return
 
-        except Exception as e:
-            self.get_logger().error(f"failed to publish peg targets: {e}")
-            self.reset_pending()
+        msg = Float64MultiArray()
+        msg.data = self.targets_to_msg_data(final_targets)
+
+        self.get_logger().info(
+            f"[PUBLISH] topic={self.peg_output_topic} "
+            f"type=object(collected) targets={final_targets} data={msg.data}"
+        )
+
+        self.publish_repeated(self.peg_pub, msg, count=10)
+        self.reset_pending()
 
     def hole_trigger_callback(self, trigger_msg):
         if self.pending_task is not None:
-            self.get_logger().warn(
-                f"ignore hole trigger because pending_task is running: {self.pending_task}"
-            )
+            self.get_logger().warn(f"ignore hole trigger: pending_task={self.pending_task}")
             return
 
         self.pending_trigger_msg = trigger_msg
         self.pending_object_targets = None
         self.pending_task = "hole_wait_object"
-
+        self.start_collect()
         self.publish_detect_mode("object")
 
+    def collect_hole_object_frame(self):
+        if not self.is_settle_done():
+            return
+
+        base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
+        targets = self.make_targets_from_objects(self.latest_objects, base_T_ee)
+        self.collected_targets.extend(targets)
+        self.collect_count += 1
+
+        collect_frames = int(self.get_parameter("collect_frames").value)
         self.get_logger().info(
-            "hole trigger received → switch detect_mode=object → wait fresh /object_poses"
+            f"[COLLECT HOLE-OBJECT] frame={self.collect_count}/{collect_frames}, "
+            f"targets={len(targets)}, total={len(self.collected_targets)}"
         )
 
-    def process_hole_after_object_update(self):
-        try:
-            if self.pending_trigger_msg is None:
-                self.reset_pending()
-                return
+        if self.collect_count < collect_frames:
+            return
 
-            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+        self.pending_object_targets = self.suppress_duplicate_targets_by_conf(
+            self.collected_targets,
+            dist_thresh_mm=float(self.get_parameter("insert_duplicate_dist_mm").value),
+        )
 
-            self.pending_object_targets = self.make_targets_from_objects(
-                self.latest_objects,
-                base_T_ee,
-            )
+        self.get_logger().info(
+            f"hole object collected | num_objects={len(self.pending_object_targets)} "
+            f"→ switch detect_mode=insert"
+        )
 
-            self.pending_task = "hole_wait_insert"
-            self.publish_detect_mode("insert")
+        self.pending_task = "hole_wait_insert"
+        self.start_collect()
+        self.publish_detect_mode("insert")
 
-            self.get_logger().info(
-                f"fresh /object_poses captured for hole | "
-                f"num_objects={len(self.pending_object_targets)} "
-                f"→ switch detect_mode=insert → wait fresh /insert_poses"
-            )
+    def collect_hole_insert_frame(self):
+        if not self.is_settle_done():
+            return
 
-        except Exception as e:
-            self.get_logger().error(f"failed during hole object capture step: {e}")
+        base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
+        targets = self.make_targets_from_objects(self.latest_inserts, base_T_ee)
+        self.collected_targets.extend(targets)
+        self.collect_count += 1
+
+        collect_frames = int(self.get_parameter("collect_frames").value)
+        self.get_logger().info(
+            f"[COLLECT HOLE-INSERT] frame={self.collect_count}/{collect_frames}, "
+            f"targets={len(targets)}, total={len(self.collected_targets)}"
+        )
+
+        if self.collect_count < collect_frames:
+            return
+
+        duplicate_dist_mm = float(self.get_parameter("insert_duplicate_dist_mm").value)
+        exclude_dist_mm = float(self.get_parameter("exclude_dist_mm").value)
+
+        insert_targets = self.suppress_duplicate_targets_by_conf(
+            self.collected_targets,
+            dist_thresh_mm=duplicate_dist_mm,
+        )
+
+        object_targets = self.pending_object_targets or []
+        valid_insert_targets = []
+
+        for ins in insert_targets:
+            should_exclude = False
+
+            for obj in object_targets:
+                if int(ins["id"]) != int(obj["id"]):
+                    continue
+
+                dist_mm = float(np.hypot(ins["x"] - obj["x"], ins["y"] - obj["y"]))
+
+                if dist_mm < exclude_dist_mm:
+                    should_exclude = True
+                    self.get_logger().info(
+                        f"exclude insert target | "
+                        f"insert_class={ins['class']} object_class={obj['class']} "
+                        f"id={ins['id']} dist={dist_mm:.1f}mm"
+                    )
+                    break
+
+            if not should_exclude:
+                valid_insert_targets.append(ins)
+
+        if not valid_insert_targets:
+            self.get_logger().warn("hole trigger: no valid insert target after collection/filtering")
             self.reset_pending()
+            return
 
-    def process_hole_after_insert_update(self):
-        try:
-            if self.pending_trigger_msg is None:
-                self.reset_pending()
-                return
+        msg = Float64MultiArray()
+        msg.data = self.targets_to_msg_data(valid_insert_targets)
 
-            if not self.latest_inserts:
-                self.get_logger().warn(
-                    "fresh /insert_poses received, but inserts is empty"
-                )
-                self.reset_pending()
-                return
+        self.get_logger().info(
+            f"[PUBLISH] topic={self.hole_output_topic} "
+            f"type=insert(collected+filtered+dedup) "
+            f"targets={valid_insert_targets} data={msg.data}"
+        )
 
-            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
-
-            exclude_dist_mm = float(self.get_parameter("exclude_dist_mm").value)
-            duplicate_dist_mm = float(
-                self.get_parameter("insert_duplicate_dist_mm").value
-            )
-
-            object_targets = self.pending_object_targets
-            if object_targets is None:
-                object_targets = []
-
-            insert_targets = self.make_targets_from_objects(
-                self.latest_inserts,
-                base_T_ee,
-            )
-
-            insert_targets = self.suppress_duplicate_targets_by_conf(
-                insert_targets,
-                dist_thresh_mm=duplicate_dist_mm,
-            )
-
-            valid_insert_targets = []
-
-            for ins in insert_targets:
-                should_exclude = False
-
-                for obj in object_targets:
-                    if ins["id"] != obj["id"]:
-                        continue
-
-                    dist_mm = float(np.hypot(ins["x"] - obj["x"], ins["y"] - obj["y"]))
-
-                    if dist_mm < exclude_dist_mm:
-                        should_exclude = True
-                        self.get_logger().info(
-                            f"exclude insert target | "
-                            f"insert_class={ins['class']}, "
-                            f"object_class={obj['class']}, "
-                            f"id={ins['id']}, "
-                            f"dist={dist_mm:.1f} mm"
-                        )
-                        break
-
-                if not should_exclude:
-                    valid_insert_targets.append(ins)
-
-            if not valid_insert_targets:
-                self.get_logger().warn(
-                    "hole trigger received, but no valid insert target after filtering"
-                )
-                self.reset_pending()
-                return
-
-            msg = Float64MultiArray()
-            msg.data = self.targets_to_msg_data(valid_insert_targets)
-
-            self.get_logger().info(
-                f"[PUBLISH] topic={self.hole_output_topic} "
-                f"type=insert(filtered+dedup) "
-                f"targets={valid_insert_targets} "
-                f"data={msg.data}"
-            )
-
-            self.publish_repeated(self.hole_pub, msg, count=10)
-
-            self.get_logger().info(
-                f"published {self.hole_output_topic} | "
-                f"num_objects={len(valid_insert_targets)}, data={msg.data}"
-            )
-
-            self.reset_pending()
-
-        except Exception as e:
-            self.get_logger().error(f"failed to publish hole targets: {e}")
-            self.reset_pending()
+        self.publish_repeated(self.hole_pub, msg, count=10)
+        self.reset_pending()
 
 
 def main(args=None):
