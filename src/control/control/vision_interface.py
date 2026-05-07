@@ -22,6 +22,24 @@ class VisionInterface:
         2: "cross",
     }
 
+    # ------------------------------------------------------------------
+    # hole/place 전용 yaw 추가 보정값
+    # ------------------------------------------------------------------
+    # peg를 잡을 때 yaw는 건드리지 않고,
+    # hole에 놓을 때 rz만 추가로 보정하고 싶으면 여기 값을 수정한다.
+    #
+    # 예:
+    #   id=0 원통     놓을 때 +5도 필요하면 0: 5.0
+    #   id=1 사각형   놓을 때 -3도 필요하면 1: -3.0
+    #   id=2 십자가   놓을 때 +10도 필요하면 2: 10.0
+    #
+    # 현재는 추가 보정 없음.
+    HOLE_YAW_OFFSET_BY_ID_DEG = {
+        0: 0.0,
+        1: 0.0,
+        2: 0.0,
+    }
+
     def __init__(
         self,
         node,
@@ -205,21 +223,28 @@ class VisionInterface:
 
         return False
 
-    
     def _xyyaw_to_tcp_pose(
         self,
         x: float,
         y: float,
         yaw: float,
         object_id: int,
+        target_kind: str = "peg",
     ) -> np.ndarray:
         """
         [x, y, yaw, id] -> [x, y, z, rx, ry, rz]
 
         yaw는 object_id에 따라 보정한 뒤 rz에 넣는다.
         z는 이후 상태머신에서 작업 높이에 맞게 덮어쓴다.
+
+        target_kind:
+            "peg"  : peg를 잡을 때 사용하는 yaw 보정
+            "hole" : hole에 놓을 때 사용하는 yaw 보정
         """
-        corrected_yaw = self._correct_yaw_by_object_id(yaw, object_id)
+        if target_kind == "hole":
+            corrected_yaw = self._correct_hole_yaw_by_object_id(yaw, object_id)
+        else:
+            corrected_yaw = self._correct_yaw_by_object_id(yaw, object_id)
 
         return np.array(
             [
@@ -253,7 +278,13 @@ class VisionInterface:
 
         peg_candidates = [
             VisionTarget(
-                pose=self._xyyaw_to_tcp_pose(x, y, yaw, object_id),
+                pose=self._xyyaw_to_tcp_pose(
+                    x,
+                    y,
+                    yaw,
+                    object_id,
+                    target_kind="peg",
+                ),
                 object_id=object_id,
             )
             for x, y, yaw, object_id in self.latest_peg_xyyawid
@@ -286,7 +317,13 @@ class VisionInterface:
 
         hole_candidates = [
             VisionTarget(
-                pose=self._xyyaw_to_tcp_pose(x, y, yaw),
+                pose=self._xyyaw_to_tcp_pose(
+                    x,
+                    y,
+                    yaw,
+                    object_id,
+                    target_kind="hole",
+                ),
                 object_id=object_id,
             )
             for x, y, yaw, object_id in self.latest_hole_xyyawid
@@ -302,6 +339,12 @@ class VisionInterface:
         self.node.get_logger().info(f"[VISION] detected hole count = {len(hole_candidates)}")
         return hole_candidates
 
+    def _normalize_yaw_deg(self, yaw: float) -> float:
+        """
+        yaw를 -180 ~ 180 deg 범위로 정규화한다.
+        """
+        return (float(yaw) + 180.0) % 360.0 - 180.0
+
     def _correct_yaw_by_object_id(self, yaw: float, object_id: int) -> float:
         """
         vision에서 받은 yaw를 object id에 따라 보정한다.
@@ -311,21 +354,19 @@ class VisionInterface:
             1: 사각형
             2: 십자가
 
-        보정 규칙:
-            원      : yaw 그대로 사용
-            사각형  : (yaw % 90) + 45
-            십자가  : yaw % 90
+        현재 peg 잡을 때 이 보정값이 잘 맞는 상태이므로,
+        이 함수는 peg 기준 보정식으로 유지한다.
         """
         yaw = float(yaw)
 
         if object_id == 0:
-            corrected_yaw = 135
+            corrected_yaw = 135.0
 
         elif object_id == 1:
-            corrected_yaw = (yaw % 90.0) + 135.0
+            corrected_yaw = (yaw % 90.0)+ 45.0
 
         elif object_id == 2:
-            corrected_yaw = yaw % 90.0 + 90
+            corrected_yaw = (yaw % 90.0) + 45.0
 
         else:
             self.node.get_logger().warn(
@@ -335,8 +376,33 @@ class VisionInterface:
             corrected_yaw = yaw
 
         self.node.get_logger().info(
-            f"[VISION] yaw correction: "
+            f"[VISION] peg yaw correction: "
             f"id={object_id}, raw_yaw={yaw:.3f}, corrected_yaw={corrected_yaw:.3f}"
+        )
+
+        return corrected_yaw
+
+    def _correct_hole_yaw_by_object_id(self, yaw: float, object_id: int) -> float:
+        """
+        hole/place 전용 yaw 보정.
+
+        기본 보정은 peg와 동일하게 적용한 뒤,
+        hole에 놓을 때만 추가 offset을 더한다.
+
+        조정은 HOLE_YAW_OFFSET_BY_ID_DEG 값만 바꾸면 된다.
+        """
+        base_yaw = self._correct_yaw_by_object_id(yaw, object_id)
+        hole_offset = float(self.HOLE_YAW_OFFSET_BY_ID_DEG.get(object_id, 0.0))
+
+        corrected_yaw = base_yaw + hole_offset
+        corrected_yaw = self._normalize_yaw_deg(corrected_yaw)
+
+        self.node.get_logger().info(
+            f"[VISION] hole yaw correction: "
+            f"id={object_id}, raw_yaw={yaw:.3f}, "
+            f"base_yaw={base_yaw:.3f}, "
+            f"hole_offset={hole_offset:.3f}, "
+            f"hole_corrected_yaw={corrected_yaw:.3f}"
         )
 
         return corrected_yaw
