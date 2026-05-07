@@ -34,6 +34,9 @@ hole/
 .vscode/
 .idea/
 
+!src/vision/templates/
+!src/vision/templates/*.png
+
 # OS
 .DS_Store
 Thumbs.db
