@@ -319,13 +319,13 @@ class VisionInterface:
         yaw = float(yaw)
 
         if object_id == 0:
-            corrected_yaw = yaw
+            corrected_yaw = 135
 
         elif object_id == 1:
-            corrected_yaw = (yaw % 90.0) + 45.0
+            corrected_yaw = (yaw % 90.0) + 135.0
 
         elif object_id == 2:
-            corrected_yaw = yaw % 90.0
+            corrected_yaw = yaw % 90.0 + 90
 
         else:
             self.node.get_logger().warn(

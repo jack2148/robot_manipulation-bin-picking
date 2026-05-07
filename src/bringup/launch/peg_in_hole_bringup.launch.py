@@ -115,13 +115,13 @@ def generate_launch_description():
         'move_j_speed': 60.0,
         'move_j_acc': 60.0,
 
-        'move_l_speed': 8.0,
-        'move_l_acc': 80.0,
+        'move_l_speed': 60.0,
+        'move_l_acc': 120.0,
 
-        'approach_move_l_speed': 40.0,
-        'approach_move_l_acc': 80.0,
+        'approach_move_l_speed': 60.0,
+        'approach_move_l_acc': 120.0,
 
-        'descend_move_l_speed': 8.0,
+        'descend_move_l_speed': 20.0,
         'descend_move_l_acc': 40.0,
 
         # ===== 비전 토픽 =====
