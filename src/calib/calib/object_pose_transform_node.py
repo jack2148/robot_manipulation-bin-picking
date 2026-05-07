@@ -102,7 +102,6 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("peg_output_topic", "/vision/peg_targets")
         self.declare_parameter("hole_output_topic", "/vision/hole_targets")
 
-        self.declare_parameter("exclude_dist_mm", 20.0)
         self.declare_parameter("insert_duplicate_dist_mm", 12.0)
         self.declare_parameter("collect_frames", 5)
         self.declare_parameter("detect_mode_settle_sec", 0.5)
@@ -266,7 +265,9 @@ class ObjectPoseTransformNode(Node):
         if cls not in self.class_to_id:
             return None
 
-        x_mm, y_mm, yaw_deg, yaw_source = self.transform_one_object_to_xyyaw(obj, base_T_ee)
+        x_mm, y_mm, yaw_deg, yaw_source = self.transform_one_object_to_xyyaw(
+            obj, base_T_ee
+        )
 
         return {
             "class": cls,
@@ -288,7 +289,11 @@ class ObjectPoseTransformNode(Node):
 
     def suppress_duplicate_targets_by_conf(self, targets, dist_thresh_mm):
         kept = []
-        targets_sorted = sorted(targets, key=lambda t: float(t["confidence"]), reverse=True)
+        targets_sorted = sorted(
+            targets,
+            key=lambda t: float(t["confidence"]),
+            reverse=True,
+        )
 
         for t in targets_sorted:
             duplicate = False
@@ -317,7 +322,12 @@ class ObjectPoseTransformNode(Node):
     def targets_to_msg_data(self, targets):
         data = []
         for t in targets:
-            data.extend([float(t["x"]), float(t["y"]), float(t["yaw"]), float(t["id"])])
+            data.extend([
+                float(t["x"]),
+                float(t["y"]),
+                float(t["yaw"]),
+                float(t["id"]),
+            ])
         return data
 
     def publish_repeated(self, publisher, msg, count=10):
@@ -334,7 +344,9 @@ class ObjectPoseTransformNode(Node):
 
     def peg_trigger_callback(self, trigger_msg):
         if self.pending_task is not None:
-            self.get_logger().warn(f"ignore peg trigger: pending_task={self.pending_task}")
+            self.get_logger().warn(
+                f"ignore peg trigger: pending_task={self.pending_task}"
+            )
             return
 
         self.pending_trigger_msg = trigger_msg
@@ -367,7 +379,9 @@ class ObjectPoseTransformNode(Node):
         )
 
         if not final_targets:
-            self.get_logger().warn("peg trigger: no valid target after 5-frame collection")
+            self.get_logger().warn(
+                "peg trigger: no valid target after collection"
+            )
             self.reset_pending()
             return
 
@@ -384,7 +398,9 @@ class ObjectPoseTransformNode(Node):
 
     def hole_trigger_callback(self, trigger_msg):
         if self.pending_task is not None:
-            self.get_logger().warn(f"ignore hole trigger: pending_task={self.pending_task}")
+            self.get_logger().warn(
+                f"ignore hole trigger: pending_task={self.pending_task}"
+            )
             return
 
         self.pending_trigger_msg = trigger_msg
@@ -446,45 +462,15 @@ class ObjectPoseTransformNode(Node):
             return
 
         duplicate_dist_mm = float(self.get_parameter("insert_duplicate_dist_mm").value)
-        exclude_dist_mm = float(self.get_parameter("exclude_dist_mm").value)
 
-        insert_targets = self.suppress_duplicate_targets_by_conf(
+        valid_insert_targets = self.suppress_duplicate_targets_by_conf(
             self.collected_targets,
             dist_thresh_mm=duplicate_dist_mm,
         )
 
-        object_targets = self.pending_object_targets or []
-        valid_insert_targets = []
-
-        for ins in insert_targets:
-            should_exclude = False
-
-            for obj in object_targets:
-                dist_mm = float(np.hypot(
-                    ins["x"] - obj["x"],
-                    ins["y"] - obj["y"],
-                ))
-
-                # id 상관없이 같은 위치에 object가 있으면 insert 제거
-                if dist_mm < exclude_dist_mm:
-                    should_exclude = True
-
-                    self.get_logger().info(
-                        f"exclude insert target | "
-                        f"insert_class={ins['class']} "
-                        f"object_class={obj['class']} "
-                        f"insert_id={ins['id']} "
-                        f"object_id={obj['id']} "
-                        f"dist={dist_mm:.1f}mm"
-                    )
-                    break
-
-            if not should_exclude:
-                valid_insert_targets.append(ins)
-
         if not valid_insert_targets:
             self.get_logger().warn(
-                "hole trigger: no valid insert target after collection/filtering"
+                "hole trigger: no valid insert target after collection"
             )
             self.reset_pending()
             return
@@ -494,7 +480,7 @@ class ObjectPoseTransformNode(Node):
 
         self.get_logger().info(
             f"[PUBLISH] topic={self.hole_output_topic} "
-            f"type=insert(collected+filtered+dedup) "
+            f"type=insert(collected+dedup) "
             f"targets={valid_insert_targets} data={msg.data}"
         )
 
