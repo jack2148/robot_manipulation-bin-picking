@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pose_publisher = vision.pose_publisher:main',
+            'pose_publisher_yaw = vision.pose_publisher_yaw:main',
         ],
     },
 )

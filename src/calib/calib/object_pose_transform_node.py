@@ -19,19 +19,19 @@ def euler_zyx_deg_to_R(rx_deg, ry_deg, rz_deg):
         [1.0, 0.0, 0.0],
         [0.0, np.cos(rx), -np.sin(rx)],
         [0.0, np.sin(rx),  np.cos(rx)],
-    ], dtype=np.float64)
+    ])
 
     Ry = np.array([
         [ np.cos(ry), 0.0, np.sin(ry)],
         [0.0,         1.0, 0.0],
         [-np.sin(ry), 0.0, np.cos(ry)],
-    ], dtype=np.float64)
+    ])
 
     Rz = np.array([
         [np.cos(rz), -np.sin(rz), 0.0],
         [np.sin(rz),  np.cos(rz), 0.0],
         [0.0,         0.0,        1.0],
-    ], dtype=np.float64)
+    ])
 
     return Rz @ Ry @ Rx
 
@@ -45,10 +45,9 @@ def rb5_pose_array_to_T_mm(data):
 
     x, y, z, rx, ry, rz = map(float, data[:6])
 
-    T = np.eye(4, dtype=np.float64)
+    T = np.eye(4)
     T[:3, :3] = euler_zyx_deg_to_R(rx, ry, rz)
     T[:3, 3] = [x, y, z]
-
     return T
 
 
@@ -60,7 +59,7 @@ def object_json_to_cam_T_obj_mm(obj):
         pos["x"],
         pos["y"],
         pos["z"],
-    ], dtype=np.float64) * 1000.0
+    ]) * 1000.0
 
     R_cam_obj = np.column_stack([
         np.array(ori["axis_x"], dtype=np.float64),
@@ -74,18 +73,16 @@ def object_json_to_cam_T_obj_mm(obj):
     if np.linalg.det(R_cam_obj) < 0:
         R_cam_obj[:, 2] *= -1.0
 
-    T = np.eye(4, dtype=np.float64)
+    T = np.eye(4)
     T[:3, :3] = R_cam_obj
     T[:3, 3] = p_cam_obj_mm
-
     return T
 
 
 def yaw_deg_from_R_base_obj(R):
     yaw_rad = np.arctan2(R[1, 0], R[0, 0])
     yaw_deg = np.degrees(yaw_rad)
-    yaw_deg = (yaw_deg + 180.0) % 360.0 - 180.0
-    return float(yaw_deg)
+    return (yaw_deg + 180.0) % 360.0 - 180.0
 
 
 class ObjectPoseTransformNode(Node):
@@ -106,29 +103,25 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("hole_output_topic", "/vision/hole_targets")
 
         self.declare_parameter("exclude_dist_mm", 30.0)
+        self.declare_parameter("insert_duplicate_dist_mm", 10.0)
 
         self.class_to_id = {
             "cylinder": 0,
             "cylinder_insert": 0,
-
             "hole": 1,
             "hole_insert": 1,
-
             "cross": 2,
             "cross_insert": 2,
         }
 
         self.min_confidence = float(self.get_parameter("min_confidence").value)
 
-        object_topic = self.get_parameter("object_topic").value
-        insert_topic = self.get_parameter("insert_topic").value
-        detect_mode_topic = self.get_parameter("detect_mode_topic").value
+        self.object_topic = self.get_parameter("object_topic").value
+        self.insert_topic = self.get_parameter("insert_topic").value
+        self.detect_mode_topic = self.get_parameter("detect_mode_topic").value
 
-        peg_trigger_topic = self.get_parameter("peg_trigger_topic").value
-        hole_trigger_topic = self.get_parameter("hole_trigger_topic").value
-
-        peg_output_topic = self.get_parameter("peg_output_topic").value
-        hole_output_topic = self.get_parameter("hole_output_topic").value
+        self.peg_output_topic = self.get_parameter("peg_output_topic").value
+        self.hole_output_topic = self.get_parameter("hole_output_topic").value
 
         self.ee_T_cam = self.load_handeye_result_as_mm()
 
@@ -139,61 +132,59 @@ class ObjectPoseTransformNode(Node):
         self.pending_trigger_msg = None
         self.pending_object_targets = None
 
-        self.detect_mode_pub = self.create_publisher(
-            String,
-            detect_mode_topic,
-            10,
-        )
+        self.detect_mode_pub = self.create_publisher(String, self.detect_mode_topic, 10)
 
         self.object_sub = self.create_subscription(
             String,
-            object_topic,
+            self.object_topic,
             self.object_callback,
             10,
         )
 
         self.insert_sub = self.create_subscription(
             String,
-            insert_topic,
+            self.insert_topic,
             self.insert_callback,
             10,
         )
 
         self.peg_trigger_sub = self.create_subscription(
             Float64MultiArray,
-            peg_trigger_topic,
+            self.get_parameter("peg_trigger_topic").value,
             self.peg_trigger_callback,
             10,
         )
 
         self.hole_trigger_sub = self.create_subscription(
             Float64MultiArray,
-            hole_trigger_topic,
+            self.get_parameter("hole_trigger_topic").value,
             self.hole_trigger_callback,
             10,
         )
 
         self.peg_pub = self.create_publisher(
             Float64MultiArray,
-            peg_output_topic,
+            self.peg_output_topic,
             10,
         )
 
         self.hole_pub = self.create_publisher(
             Float64MultiArray,
-            hole_output_topic,
+            self.hole_output_topic,
             10,
         )
 
-        self.get_logger().info(f"subscribe object topic: {object_topic}")
-        self.get_logger().info(f"subscribe insert topic: {insert_topic}")
-        self.get_logger().info(f"publish detect mode topic: {detect_mode_topic}")
-        self.get_logger().info(f"subscribe peg trigger topic: {peg_trigger_topic}")
-        self.get_logger().info(f"subscribe hole trigger topic: {hole_trigger_topic}")
-        self.get_logger().info(f"publish peg topic: {peg_output_topic}")
-        self.get_logger().info(f"publish hole topic: {hole_output_topic}")
+        self.get_logger().info(f"subscribe object topic: {self.object_topic}")
+        self.get_logger().info(f"subscribe insert topic: {self.insert_topic}")
+        self.get_logger().info(f"publish detect mode topic: {self.detect_mode_topic}")
+        self.get_logger().info(f"publish peg topic: {self.peg_output_topic}")
+        self.get_logger().info(f"publish hole topic: {self.hole_output_topic}")
         self.get_logger().info(
             f"exclude_dist_mm: {float(self.get_parameter('exclude_dist_mm').value):.1f}"
+        )
+        self.get_logger().info(
+            f"insert_duplicate_dist_mm: "
+            f"{float(self.get_parameter('insert_duplicate_dist_mm').value):.1f}"
         )
 
     def publish_detect_mode(self, mode):
@@ -273,9 +264,17 @@ class ObjectPoseTransformNode(Node):
 
         x_mm = float(p[0])
         y_mm = float(p[1])
-        yaw_deg = yaw_deg_from_R_base_obj(R)
 
-        return x_mm, y_mm, yaw_deg
+        if "yaw_deg" in obj:
+            yaw_deg = float(obj["yaw_deg"])
+            yaw_source = obj.get("yaw_source", "template")
+        else:
+            yaw_deg = yaw_deg_from_R_base_obj(R)
+            yaw_source = "pca"
+
+        yaw_deg = (yaw_deg + 180.0) % 360.0 - 180.0
+
+        return x_mm, y_mm, float(yaw_deg), yaw_source
 
     def object_to_target_dict(self, obj, base_T_ee):
         cls = obj.get("class", "")
@@ -287,19 +286,18 @@ class ObjectPoseTransformNode(Node):
         if cls not in self.class_to_id:
             return None
 
-        x_mm, y_mm, yaw_deg = self.transform_one_object_to_xyyaw(
+        x_mm, y_mm, yaw_deg, yaw_source = self.transform_one_object_to_xyyaw(
             obj=obj,
             base_T_ee=base_T_ee,
         )
 
-        obj_id = self.class_to_id[cls]
-
         return {
             "class": cls,
-            "id": int(obj_id),
+            "id": int(self.class_to_id[cls]),
             "x": float(x_mm),
             "y": float(y_mm),
             "yaw": float(yaw_deg),
+            "yaw_source": yaw_source,
             "confidence": float(conf),
         }
 
@@ -312,6 +310,38 @@ class ObjectPoseTransformNode(Node):
                 targets.append(target)
 
         return targets
+
+    def suppress_duplicate_targets_by_conf(self, targets, dist_thresh_mm):
+        kept = []
+
+        targets_sorted = sorted(
+            targets,
+            key=lambda t: float(t["confidence"]),
+            reverse=True,
+        )
+
+        for t in targets_sorted:
+            duplicate = False
+
+            for k in kept:
+                dist_mm = float(np.hypot(t["x"] - k["x"], t["y"] - k["y"]))
+
+                if dist_mm < dist_thresh_mm:
+                    duplicate = True
+                    self.get_logger().info(
+                        f"suppress duplicate insert | "
+                        f"drop_class={t['class']} "
+                        f"drop_conf={t['confidence']:.2f} "
+                        f"keep_class={k['class']} "
+                        f"keep_conf={k['confidence']:.2f} "
+                        f"dist={dist_mm:.1f} mm"
+                    )
+                    break
+
+            if not duplicate:
+                kept.append(t)
+
+        return kept
 
     def targets_to_msg_data(self, targets):
         data = []
@@ -382,15 +412,16 @@ class ObjectPoseTransformNode(Node):
             msg.data = self.targets_to_msg_data(peg_targets)
 
             self.get_logger().info(
-                f"[PUBLISH] topic=/vision/peg_targets "
+                f"[PUBLISH] topic={self.peg_output_topic} "
                 f"type=object "
+                f"targets={peg_targets} "
                 f"data={msg.data}"
             )
 
             self.publish_repeated(self.peg_pub, msg, count=10)
 
             self.get_logger().info(
-                f"published /vision/peg_targets | "
+                f"published {self.peg_output_topic} | "
                 f"num_objects={len(peg_targets)}, data={msg.data}"
             )
 
@@ -457,7 +488,11 @@ class ObjectPoseTransformNode(Node):
                 return
 
             base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
             exclude_dist_mm = float(self.get_parameter("exclude_dist_mm").value)
+            duplicate_dist_mm = float(
+                self.get_parameter("insert_duplicate_dist_mm").value
+            )
 
             object_targets = self.pending_object_targets
             if object_targets is None:
@@ -466,6 +501,11 @@ class ObjectPoseTransformNode(Node):
             insert_targets = self.make_targets_from_objects(
                 self.latest_inserts,
                 base_T_ee,
+            )
+
+            insert_targets = self.suppress_duplicate_targets_by_conf(
+                insert_targets,
+                dist_thresh_mm=duplicate_dist_mm,
             )
 
             valid_insert_targets = []
@@ -477,12 +517,7 @@ class ObjectPoseTransformNode(Node):
                     if ins["id"] != obj["id"]:
                         continue
 
-                    dist_mm = float(
-                        np.hypot(
-                            ins["x"] - obj["x"],
-                            ins["y"] - obj["y"],
-                        )
-                    )
+                    dist_mm = float(np.hypot(ins["x"] - obj["x"], ins["y"] - obj["y"]))
 
                     if dist_mm < exclude_dist_mm:
                         should_exclude = True
@@ -490,7 +525,8 @@ class ObjectPoseTransformNode(Node):
                             f"exclude insert target | "
                             f"insert_class={ins['class']}, "
                             f"object_class={obj['class']}, "
-                            f"id={ins['id']}, dist={dist_mm:.1f} mm"
+                            f"id={ins['id']}, "
+                            f"dist={dist_mm:.1f} mm"
                         )
                         break
 
@@ -508,15 +544,16 @@ class ObjectPoseTransformNode(Node):
             msg.data = self.targets_to_msg_data(valid_insert_targets)
 
             self.get_logger().info(
-                f"[PUBLISH] topic=/vision/hole_targets "
-                f"type=insert(filtered) "
+                f"[PUBLISH] topic={self.hole_output_topic} "
+                f"type=insert(filtered+dedup) "
+                f"targets={valid_insert_targets} "
                 f"data={msg.data}"
             )
 
             self.publish_repeated(self.hole_pub, msg, count=10)
 
             self.get_logger().info(
-                f"published /vision/hole_targets | "
+                f"published {self.hole_output_topic} | "
                 f"num_objects={len(valid_insert_targets)}, data={msg.data}"
             )
 
