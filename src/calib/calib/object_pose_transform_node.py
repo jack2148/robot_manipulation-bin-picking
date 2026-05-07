@@ -381,6 +381,12 @@ class ObjectPoseTransformNode(Node):
             msg = Float64MultiArray()
             msg.data = self.targets_to_msg_data(peg_targets)
 
+            self.get_logger().info(
+                f"[PUBLISH] topic=/vision/peg_targets "
+                f"type=object "
+                f"data={msg.data}"
+            )
+
             self.publish_repeated(self.peg_pub, msg, count=10)
 
             self.get_logger().info(
@@ -500,6 +506,12 @@ class ObjectPoseTransformNode(Node):
 
             msg = Float64MultiArray()
             msg.data = self.targets_to_msg_data(valid_insert_targets)
+
+            self.get_logger().info(
+                f"[PUBLISH] topic=/vision/hole_targets "
+                f"type=insert(filtered) "
+                f"data={msg.data}"
+            )
 
             self.publish_repeated(self.hole_pub, msg, count=10)
 
