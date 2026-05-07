@@ -101,31 +101,31 @@ def generate_launch_description():
 
         # ===== 고정 joint 자세 =====
         'home_joint': [-90.0, 0.0, 90.0, 0.0, 90.0, 45.0],
-        'peg_camera_joint': [10.87, 2.78, 79.15, 8.07, 90.0, 34.16],
-        'hole_camera_joint': [-169.23, 2.78, 79.15, 8.07, 90.0, 34.16],
+        'peg_camera_joint': [9.68, 8.52, 55.63, 25.85, 90.0, 35.39],
+        'hole_camera_joint': [-173.76, 8.07, 56.16, 25.78, 90.0, 38.83],
         'peg_return_mid_joint': [-47.0, 2.78, 79.15, 8.07, 90.0, 34.16],
 
         # ===== 작업 z 좌표 =====
         'pick_down_target_z_mm': 69.83,
         'pick_approach_offset_z_mm': 30.0,
-        'pick_up_target_z_mm': 140.0,
+        'pick_up_target_z_mm': 200.0,
 
         'place_approach_target_z_mm': 108.0,
         'place_down_target_z_mm': 98.0,
-        'place_up_target_z_mm': 140.0,
+        'place_up_target_z_mm': 200.0,
 
         # ===== 속도/가속도 =====
         'move_j_speed': 60.0,
         'move_j_acc': 60.0,
 
-        'move_l_speed': 90.0,
-        'move_l_acc': 180.0,
+        'move_l_speed': 180.0,
+        'move_l_acc': 360.0,
 
-        'approach_move_l_speed': 90.0,
-        'approach_move_l_acc': 180.0,
+        'approach_move_l_speed': 180.0,
+        'approach_move_l_acc': 360.0,
 
-        'descend_move_l_speed': 20.0,
-        'descend_move_l_acc': 40.0,
+        'descend_move_l_speed': 60.0,
+        'descend_move_l_acc': 120.0,
 
         # ===== 비전 토픽 =====
         'peg_targets_topic': '/vision/peg_targets',
@@ -136,7 +136,7 @@ def generate_launch_description():
 
         # ===== 비전 timing =====
         'camera_settle_sec': 0.5,
-        'vision_wait_timeout_sec': 3.0,
+        'vision_wait_timeout_sec': 5.0,
 
         # ===== 대기 =====
         'grasp_wait_sec': 1.0,
