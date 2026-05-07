@@ -12,7 +12,6 @@ from std_msgs.msg import Float64MultiArray
 from ament_index_python.packages import get_package_share_directory
 
 
-# 오일러 tcp를 회전행렬로 변환
 def euler_zyx_deg_to_R(rx_deg, ry_deg, rz_deg):
     rx, ry, rz = np.radians([rx_deg, ry_deg, rz_deg])
 
@@ -36,7 +35,7 @@ def euler_zyx_deg_to_R(rx_deg, ry_deg, rz_deg):
 
     return Rz @ Ry @ Rx
 
-# RB5 tcp를 T로 변환
+
 def rb5_pose_array_to_T_mm(data):
     if len(data) < 6:
         raise ValueError(
@@ -52,7 +51,7 @@ def rb5_pose_array_to_T_mm(data):
 
     return T
 
-# vision부에서 받은 정보(m단위)를 mm단위 정보로 변환
+
 def object_json_to_cam_T_obj_mm(obj):
     pos = obj["position"]
     ori = obj["orientation"]
@@ -81,7 +80,7 @@ def object_json_to_cam_T_obj_mm(obj):
 
     return T
 
-# pca를 바탕으로 yaw값을 추정
+
 def yaw_deg_from_R_base_obj(R):
     yaw_rad = np.arctan2(R[1, 0], R[0, 0])
     yaw_deg = np.degrees(yaw_rad)
@@ -97,6 +96,8 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("min_confidence", 0.3)
 
         self.declare_parameter("object_topic", "/object_poses")
+        self.declare_parameter("insert_topic", "/insert_poses")
+        self.declare_parameter("detect_mode_topic", "/detect_mode")
 
         self.declare_parameter("peg_trigger_topic", "/manipulation/trigger_peg")
         self.declare_parameter("hole_trigger_topic", "/manipulation/trigger_hole")
@@ -104,48 +105,67 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("peg_output_topic", "/vision/peg_targets")
         self.declare_parameter("hole_output_topic", "/vision/hole_targets")
 
-        self.declare_parameter("peg_classes", ["cylinder", "square", "cross"])
-        self.declare_parameter("hole_classes", ["cylinder_hole", "square_hole", "cross_hole"])
+        self.declare_parameter("exclude_dist_mm", 30.0)
 
         self.class_to_id = {
-            # peg zone
             "cylinder": 0,
-            "hole": 1,
-            "cross": 2,
+            "cylinder_insert": 0,
 
-            # hole zone
-            "cylinder_hole": 0,
-            "square_hole": 1,
-            "cross_hole": 2,
+            "hole": 1,
+            "hole_insert": 1,
+
+            "cross": 2,
+            "cross_insert": 2,
         }
 
         self.min_confidence = float(self.get_parameter("min_confidence").value)
 
         object_topic = self.get_parameter("object_topic").value
+        insert_topic = self.get_parameter("insert_topic").value
+        detect_mode_topic = self.get_parameter("detect_mode_topic").value
+
         peg_trigger_topic = self.get_parameter("peg_trigger_topic").value
         hole_trigger_topic = self.get_parameter("hole_trigger_topic").value
+
         peg_output_topic = self.get_parameter("peg_output_topic").value
         hole_output_topic = self.get_parameter("hole_output_topic").value
 
-        self.peg_classes = set(self.get_parameter("peg_classes").value)
-        self.hole_classes = set(self.get_parameter("hole_classes").value)
-
         self.ee_T_cam = self.load_handeye_result_as_mm()
-        self.latest_objects = []
 
-        # sub
+        self.latest_objects = []
+        self.latest_inserts = []
+
+        self.pending_task = None
+        self.pending_trigger_msg = None
+        self.pending_object_targets = None
+
+        self.detect_mode_pub = self.create_publisher(
+            String,
+            detect_mode_topic,
+            10,
+        )
+
         self.object_sub = self.create_subscription(
             String,
             object_topic,
             self.object_callback,
             10,
         )
+
+        self.insert_sub = self.create_subscription(
+            String,
+            insert_topic,
+            self.insert_callback,
+            10,
+        )
+
         self.peg_trigger_sub = self.create_subscription(
             Float64MultiArray,
             peg_trigger_topic,
             self.peg_trigger_callback,
             10,
         )
+
         self.hole_trigger_sub = self.create_subscription(
             Float64MultiArray,
             hole_trigger_topic,
@@ -153,31 +173,34 @@ class ObjectPoseTransformNode(Node):
             10,
         )
 
-        # pub
         self.peg_pub = self.create_publisher(
             Float64MultiArray,
             peg_output_topic,
             10,
         )
+
         self.hole_pub = self.create_publisher(
             Float64MultiArray,
             hole_output_topic,
             10,
         )
 
-        self.get_logger().info(f"subscribe object topic: {object_topic} [std_msgs/String]")
+        self.get_logger().info(f"subscribe object topic: {object_topic}")
+        self.get_logger().info(f"subscribe insert topic: {insert_topic}")
+        self.get_logger().info(f"publish detect mode topic: {detect_mode_topic}")
+        self.get_logger().info(f"subscribe peg trigger topic: {peg_trigger_topic}")
+        self.get_logger().info(f"subscribe hole trigger topic: {hole_trigger_topic}")
+        self.get_logger().info(f"publish peg topic: {peg_output_topic}")
+        self.get_logger().info(f"publish hole topic: {hole_output_topic}")
         self.get_logger().info(
-            f"subscribe peg trigger topic: {peg_trigger_topic} "
-            f"[Float64MultiArray: x,y,z,rx,ry,rz]"
+            f"exclude_dist_mm: {float(self.get_parameter('exclude_dist_mm').value):.1f}"
         )
-        self.get_logger().info(
-            f"subscribe hole trigger topic: {hole_trigger_topic} "
-            f"[Float64MultiArray: x,y,z,rx,ry,rz]"
-        )
-        self.get_logger().info(f"publish peg topic: {peg_output_topic} [Float64MultiArray]")
-        self.get_logger().info(f"publish hole topic: {hole_output_topic} [Float64MultiArray]")
-        self.get_logger().info(f"peg_classes: {sorted(list(self.peg_classes))}")
-        self.get_logger().info(f"hole_classes: {sorted(list(self.hole_classes))}")
+
+    def publish_detect_mode(self, mode):
+        msg = String()
+        msg.data = mode
+        self.detect_mode_pub.publish(msg)
+        self.get_logger().info(f"request detect_mode: {mode}")
 
     def load_handeye_result_as_mm(self):
         param_path = self.get_parameter("handeye_result_path").value
@@ -221,6 +244,25 @@ class ObjectPoseTransformNode(Node):
         except Exception as e:
             self.latest_objects = []
             self.get_logger().warn(f"failed to parse /object_poses JSON: {e}")
+            return
+
+        if self.pending_task == "peg_wait_object":
+            self.process_peg_after_object_update()
+
+        elif self.pending_task == "hole_wait_object":
+            self.process_hole_after_object_update()
+
+    def insert_callback(self, msg):
+        try:
+            data = json.loads(msg.data)
+            self.latest_inserts = data.get("objects", [])
+        except Exception as e:
+            self.latest_inserts = []
+            self.get_logger().warn(f"failed to parse /insert_poses JSON: {e}")
+            return
+
+        if self.pending_task == "hole_wait_insert":
+            self.process_hole_after_insert_update()
 
     def transform_one_object_to_xyyaw(self, obj, base_T_ee):
         cam_T_obj = object_json_to_cam_T_obj_mm(obj)
@@ -235,90 +277,242 @@ class ObjectPoseTransformNode(Node):
 
         return x_mm, y_mm, yaw_deg
 
-    def build_target_data(self, trigger_msg, target_classes):
-        if not self.latest_objects:
-            self.get_logger().warn("trigger received, but latest_objects is empty")
-            return []
+    def object_to_target_dict(self, obj, base_T_ee):
+        cls = obj.get("class", "")
+        conf = float(obj.get("confidence", 0.0))
 
-        base_T_ee = rb5_pose_array_to_T_mm(trigger_msg.data)
-        target_data = []
+        if conf < self.min_confidence:
+            return None
 
-        for obj in self.latest_objects:
-            cls = obj.get("class", "")
-            conf = float(obj.get("confidence", 0.0))
+        if cls not in self.class_to_id:
+            return None
 
-            if conf < self.min_confidence:
-                continue
-            if cls not in target_classes:
-                continue
+        x_mm, y_mm, yaw_deg = self.transform_one_object_to_xyyaw(
+            obj=obj,
+            base_T_ee=base_T_ee,
+        )
 
-            x_mm, y_mm, yaw_deg = self.transform_one_object_to_xyyaw(
-                obj=obj,
-                base_T_ee=base_T_ee,
-            )
+        obj_id = self.class_to_id[cls]
 
-            obj_id = self.class_to_id.get(cls, -1)
-            target_data.extend([
-                float(x_mm),
-                float(y_mm),
-                float(yaw_deg),
-                float(obj_id),
+        return {
+            "class": cls,
+            "id": int(obj_id),
+            "x": float(x_mm),
+            "y": float(y_mm),
+            "yaw": float(yaw_deg),
+            "confidence": float(conf),
+        }
+
+    def make_targets_from_objects(self, objects, base_T_ee):
+        targets = []
+
+        for obj in objects:
+            target = self.object_to_target_dict(obj, base_T_ee)
+            if target is not None:
+                targets.append(target)
+
+        return targets
+
+    def targets_to_msg_data(self, targets):
+        data = []
+
+        for t in targets:
+            data.extend([
+                float(t["x"]),
+                float(t["y"]),
+                float(t["yaw"]),
+                float(t["id"]),
             ])
 
-        return target_data
+        return data
 
-    # 1번 보내면 씹힐수도 있으니깬 귀찮으니 여러번 보내기
-    def publish_repeated(self, publisher, msg, count=5):
+    def publish_repeated(self, publisher, msg, count=10):
         for _ in range(count):
             publisher.publish(msg)
 
-    # peg zone 트리거를 받은 경우
+    def reset_pending(self):
+        self.pending_task = None
+        self.pending_trigger_msg = None
+        self.pending_object_targets = None
+
     def peg_trigger_callback(self, trigger_msg):
+        if self.pending_task is not None:
+            self.get_logger().warn(
+                f"ignore peg trigger because pending_task is running: {self.pending_task}"
+            )
+            return
+
+        self.pending_trigger_msg = trigger_msg
+        self.pending_task = "peg_wait_object"
+
+        self.publish_detect_mode("object")
+
+        self.get_logger().info(
+            "peg trigger received → switch detect_mode=object → wait fresh /object_poses"
+        )
+
+    def process_peg_after_object_update(self):
         try:
-            peg_data = self.build_target_data(
-                trigger_msg=trigger_msg,
-                target_classes=self.peg_classes,
+            if self.pending_trigger_msg is None:
+                self.reset_pending()
+                return
+
+            if not self.latest_objects:
+                self.get_logger().warn(
+                    "fresh /object_poses received, but objects is empty"
+                )
+                self.reset_pending()
+                return
+
+            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
+            peg_targets = self.make_targets_from_objects(
+                self.latest_objects,
+                base_T_ee,
             )
 
-            if not peg_data:
-                self.get_logger().warn("peg trigger received, but no valid peg target")
+            if not peg_targets:
+                self.get_logger().warn(
+                    "peg trigger received, but no valid target from fresh /object_poses"
+                )
+                self.reset_pending()
                 return
 
             msg = Float64MultiArray()
-            msg.data = peg_data
+            msg.data = self.targets_to_msg_data(peg_targets)
+
             self.publish_repeated(self.peg_pub, msg, count=10)
 
             self.get_logger().info(
                 f"published /vision/peg_targets | "
-                f"num_objects={len(peg_data) // 4}, data={peg_data}"
+                f"num_objects={len(peg_targets)}, data={msg.data}"
             )
+
+            self.reset_pending()
 
         except Exception as e:
             self.get_logger().error(f"failed to publish peg targets: {e}")
+            self.reset_pending()
 
-    # hole zone 트리거를 받은 경우
     def hole_trigger_callback(self, trigger_msg):
+        if self.pending_task is not None:
+            self.get_logger().warn(
+                f"ignore hole trigger because pending_task is running: {self.pending_task}"
+            )
+            return
+
+        self.pending_trigger_msg = trigger_msg
+        self.pending_object_targets = None
+        self.pending_task = "hole_wait_object"
+
+        self.publish_detect_mode("object")
+
+        self.get_logger().info(
+            "hole trigger received → switch detect_mode=object → wait fresh /object_poses"
+        )
+
+    def process_hole_after_object_update(self):
         try:
-            hole_data = self.build_target_data(
-                trigger_msg=trigger_msg,
-                target_classes=self.hole_classes,
+            if self.pending_trigger_msg is None:
+                self.reset_pending()
+                return
+
+            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+
+            self.pending_object_targets = self.make_targets_from_objects(
+                self.latest_objects,
+                base_T_ee,
             )
 
-            if not hole_data:
-                self.get_logger().warn("hole trigger received, but no valid hole target")
+            self.pending_task = "hole_wait_insert"
+            self.publish_detect_mode("insert")
+
+            self.get_logger().info(
+                f"fresh /object_poses captured for hole | "
+                f"num_objects={len(self.pending_object_targets)} "
+                f"→ switch detect_mode=insert → wait fresh /insert_poses"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"failed during hole object capture step: {e}")
+            self.reset_pending()
+
+    def process_hole_after_insert_update(self):
+        try:
+            if self.pending_trigger_msg is None:
+                self.reset_pending()
+                return
+
+            if not self.latest_inserts:
+                self.get_logger().warn(
+                    "fresh /insert_poses received, but inserts is empty"
+                )
+                self.reset_pending()
+                return
+
+            base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
+            exclude_dist_mm = float(self.get_parameter("exclude_dist_mm").value)
+
+            object_targets = self.pending_object_targets
+            if object_targets is None:
+                object_targets = []
+
+            insert_targets = self.make_targets_from_objects(
+                self.latest_inserts,
+                base_T_ee,
+            )
+
+            valid_insert_targets = []
+
+            for ins in insert_targets:
+                should_exclude = False
+
+                for obj in object_targets:
+                    if ins["id"] != obj["id"]:
+                        continue
+
+                    dist_mm = float(
+                        np.hypot(
+                            ins["x"] - obj["x"],
+                            ins["y"] - obj["y"],
+                        )
+                    )
+
+                    if dist_mm < exclude_dist_mm:
+                        should_exclude = True
+                        self.get_logger().info(
+                            f"exclude insert target | "
+                            f"insert_class={ins['class']}, "
+                            f"object_class={obj['class']}, "
+                            f"id={ins['id']}, dist={dist_mm:.1f} mm"
+                        )
+                        break
+
+                if not should_exclude:
+                    valid_insert_targets.append(ins)
+
+            if not valid_insert_targets:
+                self.get_logger().warn(
+                    "hole trigger received, but no valid insert target after filtering"
+                )
+                self.reset_pending()
                 return
 
             msg = Float64MultiArray()
-            msg.data = hole_data
+            msg.data = self.targets_to_msg_data(valid_insert_targets)
+
             self.publish_repeated(self.hole_pub, msg, count=10)
 
             self.get_logger().info(
                 f"published /vision/hole_targets | "
-                f"num_objects={len(hole_data) // 4}, data={hole_data}"
+                f"num_objects={len(valid_insert_targets)}, data={msg.data}"
             )
+
+            self.reset_pending()
 
         except Exception as e:
             self.get_logger().error(f"failed to publish hole targets: {e}")
+            self.reset_pending()
 
 
 def main(args=None):
