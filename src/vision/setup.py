@@ -17,6 +17,9 @@ setup(
 
         # YOLO weight 설치
         (os.path.join('share', package_name, 'weights'), ['weights/best.pt', 'weights/insert_best.pt']),
+
+        # template png 설치
+        (os.path.join('share', package_name, 'templates'), glob('templates/*.png')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
