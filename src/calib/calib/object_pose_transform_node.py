@@ -102,10 +102,10 @@ class ObjectPoseTransformNode(Node):
         self.declare_parameter("peg_output_topic", "/vision/peg_targets")
         self.declare_parameter("hole_output_topic", "/vision/hole_targets")
 
-        self.declare_parameter("exclude_dist_mm", 30.0)
-        self.declare_parameter("insert_duplicate_dist_mm", 10.0)
+        self.declare_parameter("exclude_dist_mm", 20.0)
+        self.declare_parameter("insert_duplicate_dist_mm", 12.0)
         self.declare_parameter("collect_frames", 5)
-        self.declare_parameter("detect_mode_settle_sec", 0.3)
+        self.declare_parameter("detect_mode_settle_sec", 0.5)
 
         self.class_to_id = {
             "cylinder": 0,
