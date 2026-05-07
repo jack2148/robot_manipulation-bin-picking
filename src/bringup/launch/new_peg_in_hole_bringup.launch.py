@@ -108,21 +108,21 @@ def generate_launch_description():
         # ===== 작업 z 좌표 =====
         'pick_down_target_z_mm': 69.83,
         'pick_approach_offset_z_mm': 30.0,
-        'pick_up_target_z_mm': 110.0,
+        'pick_up_target_z_mm': 140.0,
 
         'place_approach_target_z_mm': 108.0,
         'place_down_target_z_mm': 98.0,
-        'place_up_target_z_mm': 110.0,
+        'place_up_target_z_mm': 140.0,
 
         # ===== 속도/가속도 =====
         'move_j_speed': 60.0,
         'move_j_acc': 60.0,
 
-        'move_l_speed': 60.0,
-        'move_l_acc': 120.0,
+        'move_l_speed': 90.0,
+        'move_l_acc': 180.0,
 
-        'approach_move_l_speed': 60.0,
-        'approach_move_l_acc': 120.0,
+        'approach_move_l_speed': 90.0,
+        'approach_move_l_acc': 180.0,
 
         'descend_move_l_speed': 20.0,
         'descend_move_l_acc': 40.0,
