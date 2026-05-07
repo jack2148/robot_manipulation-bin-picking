@@ -131,7 +131,6 @@ class ObjectPoseTransformNode(Node):
 
         self.pending_task = None
         self.pending_trigger_msg = None
-        self.pending_object_targets = None
 
         self.collect_count = 0
         self.collected_targets = []
@@ -220,8 +219,6 @@ class ObjectPoseTransformNode(Node):
 
         if self.pending_task == "peg_wait_object":
             self.collect_peg_object_frame()
-        elif self.pending_task == "hole_wait_object":
-            self.collect_hole_object_frame()
 
     def insert_callback(self, msg):
         try:
@@ -337,7 +334,6 @@ class ObjectPoseTransformNode(Node):
     def reset_pending(self):
         self.pending_task = None
         self.pending_trigger_msg = None
-        self.pending_object_targets = None
         self.collect_count = 0
         self.collected_targets = []
         self.mode_switch_time = None
@@ -351,6 +347,7 @@ class ObjectPoseTransformNode(Node):
 
         self.pending_trigger_msg = trigger_msg
         self.pending_task = "peg_wait_object"
+
         self.start_collect()
         self.publish_detect_mode("object")
 
@@ -366,7 +363,7 @@ class ObjectPoseTransformNode(Node):
 
         collect_frames = int(self.get_parameter("collect_frames").value)
         self.get_logger().info(
-            f"[COLLECT PEG] frame={self.collect_count}/{collect_frames}, "
+            f"[COLLECT PEG-OBJECT] frame={self.collect_count}/{collect_frames}, "
             f"targets={len(targets)}, total={len(self.collected_targets)}"
         )
 
@@ -380,7 +377,7 @@ class ObjectPoseTransformNode(Node):
 
         if not final_targets:
             self.get_logger().warn(
-                "peg trigger: no valid target after collection"
+                "peg trigger: no valid object target after collection"
             )
             self.reset_pending()
             return
@@ -404,41 +401,10 @@ class ObjectPoseTransformNode(Node):
             return
 
         self.pending_trigger_msg = trigger_msg
-        self.pending_object_targets = None
-        self.pending_task = "hole_wait_object"
-        self.start_collect()
-        self.publish_detect_mode("object")
-
-    def collect_hole_object_frame(self):
-        if not self.is_settle_done():
-            return
-
-        base_T_ee = rb5_pose_array_to_T_mm(self.pending_trigger_msg.data)
-
-        targets = self.make_targets_from_objects(self.latest_objects, base_T_ee)
-        self.collected_targets.extend(targets)
-        self.collect_count += 1
-
-        collect_frames = int(self.get_parameter("collect_frames").value)
-        self.get_logger().info(
-            f"[COLLECT HOLE-OBJECT] frame={self.collect_count}/{collect_frames}, "
-            f"targets={len(targets)}, total={len(self.collected_targets)}"
-        )
-
-        if self.collect_count < collect_frames:
-            return
-
-        self.pending_object_targets = self.suppress_duplicate_targets_by_conf(
-            self.collected_targets,
-            dist_thresh_mm=float(self.get_parameter("insert_duplicate_dist_mm").value),
-        )
-
-        self.get_logger().info(
-            f"hole object collected | num_objects={len(self.pending_object_targets)} "
-            f"→ switch detect_mode=insert"
-        )
-
         self.pending_task = "hole_wait_insert"
+
+        # hole trigger는 object를 보지 않고 바로 insert만 수집한다.
+        # detect_mode 변경 후 settle time은 기존 start_collect/is_settle_done 로직 그대로 적용된다.
         self.start_collect()
         self.publish_detect_mode("insert")
 
@@ -461,14 +427,12 @@ class ObjectPoseTransformNode(Node):
         if self.collect_count < collect_frames:
             return
 
-        duplicate_dist_mm = float(self.get_parameter("insert_duplicate_dist_mm").value)
-
-        valid_insert_targets = self.suppress_duplicate_targets_by_conf(
+        final_targets = self.suppress_duplicate_targets_by_conf(
             self.collected_targets,
-            dist_thresh_mm=duplicate_dist_mm,
+            dist_thresh_mm=float(self.get_parameter("insert_duplicate_dist_mm").value),
         )
 
-        if not valid_insert_targets:
+        if not final_targets:
             self.get_logger().warn(
                 "hole trigger: no valid insert target after collection"
             )
@@ -476,12 +440,11 @@ class ObjectPoseTransformNode(Node):
             return
 
         msg = Float64MultiArray()
-        msg.data = self.targets_to_msg_data(valid_insert_targets)
+        msg.data = self.targets_to_msg_data(final_targets)
 
         self.get_logger().info(
             f"[PUBLISH] topic={self.hole_output_topic} "
-            f"type=insert(collected+dedup) "
-            f"targets={valid_insert_targets} data={msg.data}"
+            f"type=insert(collected) targets={final_targets} data={msg.data}"
         )
 
         self.publish_repeated(self.hole_pub, msg, count=10)
