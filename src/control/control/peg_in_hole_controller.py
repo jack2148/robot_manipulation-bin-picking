@@ -1,4 +1,5 @@
 import time
+from collections import Counter
 
 import numpy as np
 import rclpy
@@ -101,11 +102,17 @@ class PegInHoleController(Node):
                 ("vision_wait_timeout_sec", 2.0),
                 ("vision_fixed_rx_deg", 90.0),
                 ("vision_fixed_rz_deg", 0.0),
+
+                # 전체 반복 제한 시간.
+                # 중간평가 조건 기준 10분.
+                ("task_time_limit_sec", 600.0),
             ],
         )
 
         self.state = TaskState.IDLE_HOME
         self.use_simulation_mode = self._get_bool_param("use_simulation_mode")
+        self.task_start_time_sec: float | None = None
+        self.task_time_limit_sec = self._get_float_param("task_time_limit_sec")
 
         robot_ip = self._get_str_param("robot_ip")
         gripper_topic = self._get_str_param("gripper_topic")
@@ -197,6 +204,7 @@ class PegInHoleController(Node):
         self.get_logger().info(f"Trigger hole topic: {trigger_hole_topic}")
         self.get_logger().info(f"Camera settle sec: {camera_settle_sec}")
         self.get_logger().info(f"Use simulation mode: {self.use_simulation_mode}")
+        self.get_logger().info(f"Task time limit sec: {self.task_time_limit_sec}")
         self.get_logger().info(
             f"Flat TCP RPY: "
             f"[{self.ctx.flat_tcp_rx_deg}, "
@@ -242,6 +250,20 @@ class PegInHoleController(Node):
     # ------------------------------------------------------------------
     # selection helper
     # ------------------------------------------------------------------
+    def _set_current_peg(self, peg_index: int):
+        selected_peg = self.ctx.peg_targets[peg_index]
+
+        self.ctx.current_peg_index = peg_index
+        self.ctx.current_peg_pick_pose = selected_peg.pose.copy()
+        self.ctx.current_target_id = selected_peg.object_id
+
+        self.get_logger().info(
+            f"[SELECT] current peg index = {self.ctx.current_peg_index}, "
+            f"id = {self.ctx.current_target_id} "
+            f"({self.vision.shape_name(self.ctx.current_target_id)}), "
+            f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
+        )
+
     def select_next_peg(self):
         if len(self.ctx.peg_targets) == 0:
             self.ctx.current_peg_index = -1
@@ -249,28 +271,65 @@ class PegInHoleController(Node):
             self.ctx.current_target_id = None
             return
 
-        # 현재는 첫 번째 peg를 선택한다.
-        # 이후 필요하면 id 우선순위, 거리, x/y 정렬 기준으로 변경 가능.
-        self.ctx.current_peg_index = 0
-        selected_peg = self.ctx.peg_targets[0]
+        # remaining_jig_counts가 비어 있으면 새 사이클로 판단한다.
+        # 이때는 기존처럼 첫 번째 peg를 아무거나 잡는다.
+        if len(self.ctx.remaining_jig_counts) == 0:
+            self.get_logger().info(
+                "[SELECT] No remaining jig information. Select first peg."
+            )
+            self._set_current_peg(0)
+            return
 
-        self.ctx.current_peg_pick_pose = selected_peg.pose.copy()
-        self.ctx.current_target_id = selected_peg.object_id
+        # 이미 남은 jig 타입을 알고 있으면,
+        # 그 jig 타입에 대응되는 peg만 선택한다.
+        for i, peg in enumerate(self.ctx.peg_targets):
+            if self.ctx.remaining_jig_counts.get(peg.object_id, 0) > 0:
+                self.get_logger().info(
+                    f"[SELECT] Select peg matched with remaining jig id = {peg.object_id} "
+                    f"({self.vision.shape_name(peg.object_id)})"
+                )
+                self._set_current_peg(i)
+                return
 
-        self.get_logger().info(
-            f"[SELECT] current peg index = {self.ctx.current_peg_index}, "
-            f"id = {self.ctx.current_target_id} "
-            f"({self.vision.shape_name(self.ctx.current_target_id)})"
+        # 남은 jig 타입에 해당하는 peg가 없으면,
+        # 현재 jig 세트로는 더 할 수 없다고 보고 새 사이클로 넘어간다.
+        # 이후 첫 번째 peg를 잡고 hole 촬영 결과에 따라 다시 판단한다.
+        self.get_logger().warn(
+            "[SELECT] No peg matched with remaining jig ids. "
+            "Clear remaining_jig_counts and select first peg."
+        )
+        self.ctx.remaining_jig_counts.clear()
+        self._set_current_peg(0)
+
+    def _update_remaining_jig_counts_if_needed(self):
+        """
+        remaining_jig_counts가 비어 있을 때만 현재 촬영된 hole 목록으로 초기화한다.
+
+        의미:
+            - 비어 있음: 새 jig 세트 시작
+            - 비어 있지 않음: 이전에 본 jig 세트에서 아직 안 쓴 jig가 남아 있음
+        """
+        if len(self.ctx.remaining_jig_counts) != 0:
+            return
+
+        self.ctx.remaining_jig_counts = Counter(
+            target.object_id for target in self.ctx.hole_targets
         )
 
-    def select_next_hole(self):
+        self.get_logger().info(
+            f"[JIG] Initialize remaining_jig_counts = "
+            f"{dict(self.ctx.remaining_jig_counts)}"
+        )
+
+    def select_next_hole(self) -> bool:
         if self.ctx.current_target_id is None:
             raise RuntimeError("No selected peg id. Cannot select matching hole.")
 
         if len(self.ctx.hole_targets) == 0:
             self.ctx.current_hole_index = -1
             self.ctx.current_hole_place_pose = None
-            return
+            self.get_logger().warn("[SELECT] No available hole detected")
+            return False
 
         self.ctx.current_hole_index = -1
         self.ctx.current_hole_place_pose = None
@@ -285,14 +344,82 @@ class PegInHoleController(Node):
                     f"id = {self.ctx.current_target_id} "
                     f"({self.vision.shape_name(self.ctx.current_target_id)})"
                 )
-                return
+                return True
 
         available_ids = [target.object_id for target in self.ctx.hole_targets]
-        raise RuntimeError(
-            f"No matching hole found for selected peg id = {self.ctx.current_target_id} "
+
+        self.get_logger().warn(
+            f"[SELECT] No matching hole found for selected peg id = "
+            f"{self.ctx.current_target_id} "
             f"({self.vision.shape_name(self.ctx.current_target_id)}). "
             f"Available hole ids = {available_ids}"
         )
+
+        # matching hole이 실제 촬영 결과에 없으면,
+        # 다음 peg 선택에서 같은 타입을 반복해서 잡지 않도록 해당 타입을 제거한다.
+        if self.ctx.current_target_id in self.ctx.remaining_jig_counts:
+            del self.ctx.remaining_jig_counts[self.ctx.current_target_id]
+
+            self.get_logger().warn(
+                f"[JIG] Remove unavailable jig id = {self.ctx.current_target_id} "
+                f"from remaining_jig_counts. "
+                f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
+            )
+
+        return False
+
+    def mark_current_jig_used(self):
+        if self.ctx.current_target_id is None:
+            return
+
+        object_id = self.ctx.current_target_id
+
+        if self.ctx.remaining_jig_counts.get(object_id, 0) > 0:
+            self.ctx.remaining_jig_counts[object_id] -= 1
+
+            if self.ctx.remaining_jig_counts[object_id] <= 0:
+                del self.ctx.remaining_jig_counts[object_id]
+
+        self.get_logger().info(
+            f"[JIG] Used jig id = {object_id} "
+            f"({self.vision.shape_name(object_id)}), "
+            f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
+        )
+
+    def save_last_pick_pose(self):
+        if self.ctx.current_peg_pick_pose is None:
+            raise RuntimeError("No selected peg target")
+
+        approach_pose = self.ctx.current_peg_pick_pose.copy()
+        approach_pose[2] = (
+            self.ctx.pick_down_target_z_mm
+            + self.ctx.pick_approach_offset_z_mm
+        )
+
+        down_pose = self.ctx.current_peg_pick_pose.copy()
+        down_pose[2] = self.ctx.pick_down_target_z_mm
+
+        self.ctx.last_pick_approach_pose = approach_pose.copy()
+        self.ctx.last_pick_down_pose = down_pose.copy()
+        self.ctx.last_pick_id = self.ctx.current_target_id
+
+        self.get_logger().info(
+            f"[RECOVERY SAVE] last_pick_id = {self.ctx.last_pick_id}, "
+            f"approach_pose = {self.ctx.last_pick_approach_pose}, "
+            f"down_pose = {self.ctx.last_pick_down_pose}"
+        )
+
+    def clear_current_task(self):
+        self.ctx.current_peg_index = -1
+        self.ctx.current_hole_index = -1
+        self.ctx.current_peg_pick_pose = None
+        self.ctx.current_hole_place_pose = None
+        self.ctx.current_target_id = None
+
+    def clear_recovery_pose(self):
+        self.ctx.last_pick_approach_pose = None
+        self.ctx.last_pick_down_pose = None
+        self.ctx.last_pick_id = None
 
     def consume_current_task(self):
         if self.ctx.current_peg_index >= 0:
@@ -303,11 +430,8 @@ class PegInHoleController(Node):
             if len(self.ctx.hole_targets) > self.ctx.current_hole_index:
                 del self.ctx.hole_targets[self.ctx.current_hole_index]
 
-        self.ctx.current_peg_index = -1
-        self.ctx.current_hole_index = -1
-        self.ctx.current_peg_pick_pose = None
-        self.ctx.current_hole_place_pose = None
-        self.ctx.current_target_id = None
+        self.clear_current_task()
+        self.clear_recovery_pose()
 
     # ------------------------------------------------------------------
     # state machine
@@ -316,6 +440,8 @@ class PegInHoleController(Node):
         self.get_logger().info(f"[STATE] {self.state.name}")
 
         if self.state == TaskState.IDLE_HOME:
+            self.task_start_time_sec = time.monotonic()
+
             self.motion.move_j_and_wait(self.ctx.home_joint)
             self.gripper.open()
             time.sleep(0.5)
@@ -350,6 +476,9 @@ class PegInHoleController(Node):
                 self.ctx.pick_down_target_z_mm
                 + self.ctx.pick_approach_offset_z_mm
             )
+
+            # matching hole이 없을 때 원래 위치로 되돌리기 위해 저장한다.
+            self.save_last_pick_pose()
 
             # peg 잡기 전, 조금 높은 접근 위치로 이동
             self.motion.move_l_and_wait(
@@ -398,11 +527,19 @@ class PegInHoleController(Node):
         elif self.state == TaskState.INSPECT_HOLES:
             self.ctx.hole_targets = self.vision.inspect_holes()
 
-            if len(self.ctx.hole_targets) == 0:
-                raise RuntimeError("No available hole detected")
+            # 새 사이클이면 현재 촬영된 jig 목록을 저장한다.
+            self._update_remaining_jig_counts_if_needed()
 
-            self.select_next_hole()
-            self.state = TaskState.MOVE_TO_TARGET_HOLE
+            matched = self.select_next_hole()
+
+            if matched:
+                self.state = TaskState.MOVE_TO_TARGET_HOLE
+            else:
+                self.get_logger().warn(
+                    "[RECOVERY] Matching hole is not found. "
+                    "Return peg to original pick place."
+                )
+                self.state = TaskState.RETURN_TO_PICK_PLACE
 
         elif self.state == TaskState.MOVE_TO_TARGET_HOLE:
             if self.ctx.current_hole_place_pose is None:
@@ -437,6 +574,10 @@ class PegInHoleController(Node):
         elif self.state == TaskState.RELEASE_PEG:
             self.gripper.open()
             time.sleep(self.ctx.release_wait_sec)
+
+            # 정상 삽입 성공으로 보고 현재 타입의 jig 사용 count를 감소시킨다.
+            self.mark_current_jig_used()
+
             self.state = TaskState.LIFT_FROM_HOLE
 
         elif self.state == TaskState.LIFT_FROM_HOLE:
@@ -450,7 +591,74 @@ class PegInHoleController(Node):
             self.state = TaskState.CHECK_REMAINING_TASK
 
         elif self.state == TaskState.CHECK_REMAINING_TASK:
+            if len(self.ctx.remaining_jig_counts) == 0:
+                self.get_logger().info(
+                    "[INFO] All remembered jigs are used. "
+                    "Start new cycle from first peg."
+                )
+
             self.consume_current_task()
+            self.state = TaskState.MOVE_TO_PEG_CAMERA_POSE_VIA_MID
+
+        elif self.state == TaskState.RETURN_TO_PICK_PLACE:
+            if self.ctx.last_pick_approach_pose is None:
+                raise RuntimeError("No saved pick approach pose for recovery")
+
+            self.get_logger().info(
+                f"[RECOVERY] return to pick approach pose = "
+                f"{self.ctx.last_pick_approach_pose}"
+            )
+
+            self.motion.move_l_and_wait(
+                self.ctx.last_pick_approach_pose,
+                speed=self.ctx.approach_move_l_speed,
+                acc=self.ctx.approach_move_l_acc,
+            )
+            self.state = TaskState.DESCEND_TO_PICK_PLACE
+
+        elif self.state == TaskState.DESCEND_TO_PICK_PLACE:
+            if self.ctx.last_pick_down_pose is None:
+                raise RuntimeError("No saved pick down pose for recovery")
+
+            self.get_logger().info(
+                f"[RECOVERY] descend to original pick pose = "
+                f"{self.ctx.last_pick_down_pose}"
+            )
+
+            self.motion.move_l_and_wait(
+                self.ctx.last_pick_down_pose,
+                speed=self.ctx.descend_move_l_speed,
+                acc=self.ctx.descend_move_l_acc,
+            )
+            self.state = TaskState.RELEASE_BACK_TO_PICK_PLACE
+
+        elif self.state == TaskState.RELEASE_BACK_TO_PICK_PLACE:
+            self.get_logger().info("[RECOVERY] open gripper and return peg")
+            self.gripper.open()
+            time.sleep(self.ctx.release_wait_sec)
+            self.state = TaskState.LIFT_FROM_PICK_PLACE
+
+        elif self.state == TaskState.LIFT_FROM_PICK_PLACE:
+            if self.ctx.last_pick_approach_pose is None:
+                raise RuntimeError("No saved pick approach pose for recovery")
+
+            self.get_logger().info(
+                f"[RECOVERY] lift after returning peg = "
+                f"{self.ctx.last_pick_approach_pose}"
+            )
+
+            self.motion.move_l_and_wait(
+                self.ctx.last_pick_approach_pose,
+                speed=self.ctx.approach_move_l_speed,
+                acc=self.ctx.approach_move_l_acc,
+            )
+
+            self.clear_current_task()
+            self.clear_recovery_pose()
+
+            # 다시 peg 촬영부터 시작한다.
+            # remaining_jig_counts는 유지한다.
+            # 따라서 다음에는 남은 jig 타입에 맞는 peg를 우선 선택한다.
             self.state = TaskState.MOVE_TO_PEG_CAMERA_POSE_VIA_MID
 
         elif self.state == TaskState.RETURN_HOME:
@@ -466,11 +674,31 @@ class PegInHoleController(Node):
         else:
             raise RuntimeError(f"Unhandled state: {self.state}")
 
+    def is_time_limit_over(self) -> bool:
+        if self.task_start_time_sec is None:
+            return False
+
+        elapsed = time.monotonic() - self.task_start_time_sec
+
+        if elapsed >= self.task_time_limit_sec:
+            self.get_logger().info(
+                f"[TIMEOUT] Task time limit reached. "
+                f"elapsed = {elapsed:.2f} sec, "
+                f"limit = {self.task_time_limit_sec:.2f} sec"
+            )
+            return True
+
+        return False
+
     def run(self):
         try:
             self.motion.set_operation_mode()
 
             while rclpy.ok() and self.state not in (TaskState.DONE, TaskState.ERROR):
+                if self.is_time_limit_over():
+                    self.state = TaskState.RETURN_HOME
+                    continue
+
                 self.step()
                 rclpy.spin_once(self, timeout_sec=0.01)
 

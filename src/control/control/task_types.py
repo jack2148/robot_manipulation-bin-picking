@@ -1,5 +1,6 @@
 from enum import Enum, auto
 from dataclasses import dataclass, field
+from collections import Counter
 
 import numpy as np
 
@@ -20,6 +21,12 @@ class TaskState(Enum):
     RELEASE_PEG = auto()                      # peg 놓기
     LIFT_FROM_HOLE = auto()                   # 놓고 상승
     CHECK_REMAINING_TASK = auto()             # 남은 작업 확인
+
+    RETURN_TO_PICK_PLACE = auto()             # matching hole이 없을 때 원래 peg 위치 위로 복귀
+    DESCEND_TO_PICK_PLACE = auto()            # 원래 peg 잡은 높이까지 하강
+    RELEASE_BACK_TO_PICK_PLACE = auto()       # 원래 위치에 peg 다시 놓기
+    LIFT_FROM_PICK_PLACE = auto()             # peg 다시 놓고 상승
+
     RETURN_HOME = auto()                      # 홈 자세 복귀
     DONE = auto()                             # 종료
     ERROR = auto()                            # 예외
@@ -118,3 +125,14 @@ class TaskContext:
     current_peg_pick_pose: np.ndarray | None = None
     current_hole_place_pose: np.ndarray | None = None
     current_target_id: int | None = None
+
+    # ===== jig 사용 현황 =====
+    # 아직 사용하지 않은 jig 타입별 개수.
+    # 비어 있으면 새 사이클로 보고 첫 번째 peg를 아무거나 선택한다.
+    remaining_jig_counts: Counter = field(default_factory=Counter)
+
+    # ===== 예외 복구용 데이터 =====
+    # peg를 잡은 뒤 matching jig가 없을 경우 원래 위치에 다시 내려놓기 위해 저장한다.
+    last_pick_approach_pose: np.ndarray | None = None
+    last_pick_down_pose: np.ndarray | None = None
+    last_pick_id: int | None = None
