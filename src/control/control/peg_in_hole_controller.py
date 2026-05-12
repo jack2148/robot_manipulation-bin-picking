@@ -102,17 +102,11 @@ class PegInHoleController(Node):
                 ("vision_wait_timeout_sec", 2.0),
                 ("vision_fixed_rx_deg", 90.0),
                 ("vision_fixed_rz_deg", 0.0),
-
-                # 전체 반복 제한 시간.
-                # 중간평가 조건 기준 10분.
-                ("task_time_limit_sec", 600.0),
             ],
         )
 
         self.state = TaskState.IDLE_HOME
         self.use_simulation_mode = self._get_bool_param("use_simulation_mode")
-        self.task_start_time_sec: float | None = None
-        self.task_time_limit_sec = self._get_float_param("task_time_limit_sec")
 
         robot_ip = self._get_str_param("robot_ip")
         gripper_topic = self._get_str_param("gripper_topic")
@@ -204,7 +198,6 @@ class PegInHoleController(Node):
         self.get_logger().info(f"Trigger hole topic: {trigger_hole_topic}")
         self.get_logger().info(f"Camera settle sec: {camera_settle_sec}")
         self.get_logger().info(f"Use simulation mode: {self.use_simulation_mode}")
-        self.get_logger().info(f"Task time limit sec: {self.task_time_limit_sec}")
         self.get_logger().info(
             f"Flat TCP RPY: "
             f"[{self.ctx.flat_tcp_rx_deg}, "
@@ -440,8 +433,6 @@ class PegInHoleController(Node):
         self.get_logger().info(f"[STATE] {self.state.name}")
 
         if self.state == TaskState.IDLE_HOME:
-            self.task_start_time_sec = time.monotonic()
-
             self.motion.move_j_and_wait(self.ctx.home_joint)
             self.gripper.open()
             time.sleep(0.5)
@@ -674,31 +665,11 @@ class PegInHoleController(Node):
         else:
             raise RuntimeError(f"Unhandled state: {self.state}")
 
-    def is_time_limit_over(self) -> bool:
-        if self.task_start_time_sec is None:
-            return False
-
-        elapsed = time.monotonic() - self.task_start_time_sec
-
-        if elapsed >= self.task_time_limit_sec:
-            self.get_logger().info(
-                f"[TIMEOUT] Task time limit reached. "
-                f"elapsed = {elapsed:.2f} sec, "
-                f"limit = {self.task_time_limit_sec:.2f} sec"
-            )
-            return True
-
-        return False
-
     def run(self):
         try:
             self.motion.set_operation_mode()
 
             while rclpy.ok() and self.state not in (TaskState.DONE, TaskState.ERROR):
-                if self.is_time_limit_over():
-                    self.state = TaskState.RETURN_HOME
-                    continue
-
                 self.step()
                 rclpy.spin_once(self, timeout_sec=0.01)
 
