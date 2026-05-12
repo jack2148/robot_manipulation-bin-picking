@@ -17,9 +17,9 @@ from std_msgs.msg import String
 WEIGHTS_DIR = Path(get_package_share_directory('vision')) / 'weights'
 TEMPLATE_DIR = Path(get_package_share_directory('vision')) / 'templates'
 
-CONF_THRESH = 0.4
+CONF_THRESH = 0.35
 
-ANGLE_STEP_DEG = 2
+ANGLE_STEP_DEG = 1
 MATCH_SIZE = 160
 
 MODELS = {
