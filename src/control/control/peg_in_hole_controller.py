@@ -102,6 +102,9 @@ class PegInHoleController(Node):
                 ("vision_wait_timeout_sec", 2.0),
                 ("vision_fixed_rx_deg", 90.0),
                 ("vision_fixed_rz_deg", 0.0),
+
+                # 방금 원위치에 되돌려놓은 peg를 한 번 제외할 때 쓰는 xy 거리 기준
+                ("skip_once_xy_tol_mm", 20.0),
             ],
         )
 
@@ -162,6 +165,8 @@ class PegInHoleController(Node):
             vision_wait_timeout_sec=self._get_float_param("vision_wait_timeout_sec"),
             vision_fixed_rx_deg=self._get_float_param("vision_fixed_rx_deg"),
             vision_fixed_rz_deg=self._get_float_param("vision_fixed_rz_deg"),
+
+            skip_once_xy_tol_mm=self._get_float_param("skip_once_xy_tol_mm"),
         )
 
         self.motion = RobotMotion(
@@ -243,6 +248,29 @@ class PegInHoleController(Node):
     # ------------------------------------------------------------------
     # selection helper
     # ------------------------------------------------------------------
+    def is_skip_once_target(self, peg) -> bool:
+        """
+        matching jig가 없어서 원래 위치에 다시 내려놓은 peg와
+        같은 id의 peg는 다음 선택에서 딱 1번만 제외한다.
+
+        위치 기준이 아니라 id 기준이다.
+        예:
+            방금 원 peg를 되돌려놓음
+            → 다음 선택에서 object_id == 0인 peg는 모두 한 번 제외
+        """
+        if self.ctx.skip_once_pick_id is None:
+            return False
+
+        if peg.object_id == self.ctx.skip_once_pick_id:
+            self.get_logger().info(
+                f"[SKIP_ONCE] skip same id once. "
+                f"id = {peg.object_id} "
+                f"({self.vision.shape_name(peg.object_id)})"
+            )
+            return True
+
+        return False
+
     def _set_current_peg(self, peg_index: int):
         selected_peg = self.ctx.peg_targets[peg_index]
 
@@ -264,24 +292,74 @@ class PegInHoleController(Node):
             self.ctx.current_target_id = None
             return
 
+        selected_index = None
+
         # remaining_jig_counts가 비어 있으면 새 사이클로 판단한다.
-        # 이때는 기존처럼 첫 번째 peg를 아무거나 잡는다.
+        # 이때는 기존처럼 첫 번째 peg를 아무거나 잡되,
+        # 방금 원위치에 되돌려놓은 peg는 한 번만 제외한다.
         if len(self.ctx.remaining_jig_counts) == 0:
             self.get_logger().info(
-                "[SELECT] No remaining jig information. Select first peg."
+                "[SELECT] No remaining jig information. Select first non-skipped peg."
             )
-            self._set_current_peg(0)
+
+            for i, peg in enumerate(self.ctx.peg_targets):
+                if self.is_skip_once_target(peg):
+                    continue
+
+                selected_index = i
+                break
+
+            if selected_index is None:
+                self.get_logger().warn(
+                    "[SELECT] Only skipped peg is available. "
+                    "Clear skip_once and select first peg."
+                )
+                self.clear_skip_once()
+                selected_index = 0
+
+            self._set_current_peg(selected_index)
+            self.clear_skip_once()
             return
 
-        # 이미 남은 jig 타입을 알고 있으면,
+        # 남은 jig 타입을 알고 있으면,
         # 그 jig 타입에 대응되는 peg만 선택한다.
+        # 이때도 방금 되돌려놓은 peg는 한 번만 제외한다.
         for i, peg in enumerate(self.ctx.peg_targets):
-            if self.ctx.remaining_jig_counts.get(peg.object_id, 0) > 0:
-                self.get_logger().info(
-                    f"[SELECT] Select peg matched with remaining jig id = {peg.object_id} "
-                    f"({self.vision.shape_name(peg.object_id)})"
-                )
-                self._set_current_peg(i)
+            if self.ctx.remaining_jig_counts.get(peg.object_id, 0) <= 0:
+                continue
+
+            if self.is_skip_once_target(peg):
+                continue
+
+            selected_index = i
+            break
+
+        if selected_index is not None:
+            peg = self.ctx.peg_targets[selected_index]
+            self.get_logger().info(
+                f"[SELECT] Select peg matched with remaining jig id = {peg.object_id} "
+                f"({self.vision.shape_name(peg.object_id)})"
+            )
+            self._set_current_peg(selected_index)
+            self.clear_skip_once()
+            return
+
+        # skip_once 때문에 선택할 peg가 없을 수도 있다.
+        # 이 경우 한 번 제외 조건을 해제하고 다시 남은 jig 타입 기준으로 선택한다.
+        if self.ctx.skip_once_pick_pose is not None:
+            self.get_logger().warn(
+                "[SELECT] No candidate after skip_once. "
+                "Clear skip_once and retry selection."
+            )
+            self.clear_skip_once()
+
+            for i, peg in enumerate(self.ctx.peg_targets):
+                if self.ctx.remaining_jig_counts.get(peg.object_id, 0) > 0:
+                    selected_index = i
+                    break
+
+            if selected_index is not None:
+                self._set_current_peg(selected_index)
                 return
 
         # 남은 jig 타입에 해당하는 peg가 없으면,
@@ -348,8 +426,6 @@ class PegInHoleController(Node):
             f"Available hole ids = {available_ids}"
         )
 
-        # matching hole이 실제 촬영 결과에 없으면,
-        # 다음 peg 선택에서 같은 타입을 반복해서 잡지 않도록 해당 타입을 제거한다.
         if self.ctx.current_target_id in self.ctx.remaining_jig_counts:
             del self.ctx.remaining_jig_counts[self.ctx.current_target_id]
 
@@ -383,24 +459,37 @@ class PegInHoleController(Node):
         if self.ctx.current_peg_pick_pose is None:
             raise RuntimeError("No selected peg target")
 
-        approach_pose = self.ctx.current_peg_pick_pose.copy()
-        approach_pose[2] = (
-            self.ctx.pick_down_target_z_mm
-            + self.ctx.pick_approach_offset_z_mm
-        )
+        up_pose = self.ctx.current_peg_pick_pose.copy()
+        up_pose[2] = self.ctx.pick_up_target_z_mm
 
         down_pose = self.ctx.current_peg_pick_pose.copy()
         down_pose[2] = self.ctx.pick_down_target_z_mm
 
-        self.ctx.last_pick_approach_pose = approach_pose.copy()
+        self.ctx.last_pick_up_pose = up_pose.copy()
         self.ctx.last_pick_down_pose = down_pose.copy()
         self.ctx.last_pick_id = self.ctx.current_target_id
 
         self.get_logger().info(
             f"[RECOVERY SAVE] last_pick_id = {self.ctx.last_pick_id}, "
-            f"approach_pose = {self.ctx.last_pick_approach_pose}, "
+            f"up_pose = {self.ctx.last_pick_up_pose}, "
             f"down_pose = {self.ctx.last_pick_down_pose}"
         )
+
+    def set_skip_once_from_last_pick(self):
+        """
+        방금 matching jig가 없어서 되돌려놓은 peg의 id를
+        다음 peg 선택에서 딱 1번 제외하기 위해 저장한다.
+        """
+        self.ctx.skip_once_pick_id = self.ctx.last_pick_id
+
+        self.get_logger().info(
+            f"[SKIP_ONCE] set skip id once = {self.ctx.skip_once_pick_id} "
+            f"({self.vision.shape_name(self.ctx.skip_once_pick_id)})"
+        )
+
+    def clear_skip_once(self):
+        self.ctx.skip_once_pick_pose = None
+        self.ctx.skip_once_pick_id = None
 
     def clear_current_task(self):
         self.ctx.current_peg_index = -1
@@ -410,7 +499,7 @@ class PegInHoleController(Node):
         self.ctx.current_target_id = None
 
     def clear_recovery_pose(self):
-        self.ctx.last_pick_approach_pose = None
+        self.ctx.last_pick_up_pose = None
         self.ctx.last_pick_down_pose = None
         self.ctx.last_pick_id = None
 
@@ -469,6 +558,8 @@ class PegInHoleController(Node):
             )
 
             # matching hole이 없을 때 원래 위치로 되돌리기 위해 저장한다.
+            # 복구 시에는 pick_up_target_z_mm 높이로 먼저 돌아온 뒤,
+            # move_l로 pick_down_target_z_mm까지 내려간다.
             self.save_last_pick_pose()
 
             # peg 잡기 전, 조금 높은 접근 위치로 이동
@@ -518,7 +609,6 @@ class PegInHoleController(Node):
         elif self.state == TaskState.INSPECT_HOLES:
             self.ctx.hole_targets = self.vision.inspect_holes()
 
-            # 새 사이클이면 현재 촬영된 jig 목록을 저장한다.
             self._update_remaining_jig_counts_if_needed()
 
             matched = self.select_next_hole()
@@ -528,9 +618,9 @@ class PegInHoleController(Node):
             else:
                 self.get_logger().warn(
                     "[RECOVERY] Matching hole is not found. "
-                    "Return peg to original pick place."
+                    "Return peg to original pick place through J1 midpoint."
                 )
-                self.state = TaskState.RETURN_TO_PICK_PLACE
+                self.state = TaskState.RETURN_TO_PICK_VIA_MID
 
         elif self.state == TaskState.MOVE_TO_TARGET_HOLE:
             if self.ctx.current_hole_place_pose is None:
@@ -591,17 +681,26 @@ class PegInHoleController(Node):
             self.consume_current_task()
             self.state = TaskState.MOVE_TO_PEG_CAMERA_POSE_VIA_MID
 
-        elif self.state == TaskState.RETURN_TO_PICK_PLACE:
-            if self.ctx.last_pick_approach_pose is None:
-                raise RuntimeError("No saved pick approach pose for recovery")
+        elif self.state == TaskState.RETURN_TO_PICK_VIA_MID:
+            if self.ctx.last_pick_up_pose is None:
+                raise RuntimeError("No saved pick up pose for recovery")
+
+            # hole/camera 쪽에서 바로 cartesian으로 돌아가지 않고,
+            # 현재 joint를 기준으로 J1만 home 쪽으로 먼저 경유한다.
+            self.motion.move_j1_only_and_wait(self.ctx.home_joint[0])
+            self.state = TaskState.RETURN_TO_PICK_UP_POSE
+
+        elif self.state == TaskState.RETURN_TO_PICK_UP_POSE:
+            if self.ctx.last_pick_up_pose is None:
+                raise RuntimeError("No saved pick up pose for recovery")
 
             self.get_logger().info(
-                f"[RECOVERY] return to pick approach pose = "
-                f"{self.ctx.last_pick_approach_pose}"
+                f"[RECOVERY] return to original pick up pose = "
+                f"{self.ctx.last_pick_up_pose}"
             )
 
             self.motion.move_l_and_wait(
-                self.ctx.last_pick_approach_pose,
+                self.ctx.last_pick_up_pose,
                 speed=self.ctx.approach_move_l_speed,
                 acc=self.ctx.approach_move_l_acc,
             )
@@ -627,19 +726,23 @@ class PegInHoleController(Node):
             self.get_logger().info("[RECOVERY] open gripper and return peg")
             self.gripper.open()
             time.sleep(self.ctx.release_wait_sec)
+
+            # 방금 원위치에 되돌려놓은 peg는 다음 선택에서 한 번만 제외한다.
+            self.set_skip_once_from_last_pick()
+
             self.state = TaskState.LIFT_FROM_PICK_PLACE
 
         elif self.state == TaskState.LIFT_FROM_PICK_PLACE:
-            if self.ctx.last_pick_approach_pose is None:
-                raise RuntimeError("No saved pick approach pose for recovery")
+            if self.ctx.last_pick_up_pose is None:
+                raise RuntimeError("No saved pick up pose for recovery")
 
             self.get_logger().info(
                 f"[RECOVERY] lift after returning peg = "
-                f"{self.ctx.last_pick_approach_pose}"
+                f"{self.ctx.last_pick_up_pose}"
             )
 
             self.motion.move_l_and_wait(
-                self.ctx.last_pick_approach_pose,
+                self.ctx.last_pick_up_pose,
                 speed=self.ctx.approach_move_l_speed,
                 acc=self.ctx.approach_move_l_acc,
             )
@@ -647,10 +750,9 @@ class PegInHoleController(Node):
             self.clear_current_task()
             self.clear_recovery_pose()
 
-            # 다시 peg 촬영부터 시작한다.
+            # 방금 되돌려놓은 뒤에는 home/j1 경유 없이 바로 peg 사진 자세로 이동한다.
             # remaining_jig_counts는 유지한다.
-            # 따라서 다음에는 남은 jig 타입에 맞는 peg를 우선 선택한다.
-            self.state = TaskState.MOVE_TO_PEG_CAMERA_POSE_VIA_MID
+            self.state = TaskState.MOVE_TO_PEG_CAMERA_POSE
 
         elif self.state == TaskState.RETURN_HOME:
             self.motion.move_j_and_wait(self.ctx.home_joint)
