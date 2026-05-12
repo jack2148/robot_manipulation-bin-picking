@@ -21,51 +21,55 @@ def generate_launch_description():
     )
 
     # ============================================================
-    # 1. Pose Publisher New Version
+    # 1. Pose Publisher OB-IN Version
     #
     # file:
     #   /home/choisuhyun/course/robot_manipulation-bin-picking/
-    #   src/vision/vision/pose_publisher_newenw.py
+    #   src/vision/vision/new_pose_publisher_ob_in.py
     #
-    # RealSense + YOLO + Seg Center + Template Sliding + Depth Median
+    # RealSense + YOLO 통합 모델(ob_in_best.pt) + Template Yaw
     #
-    # /detect_mode = object
-    #   -> best.pt 실행
-    #   -> /object_poses publish
+    # 항상 object + insert를 동시에 검출하고,
+    # 아래 토픽을 계속 publish:
     #
-    # /detect_mode = insert
-    #   -> insert_best.pt 실행
-    #   -> /insert_poses publish
+    #   /ob_in_poses
+    #   /object_poses
+    #   /insert_poses
+    #
+    # 참고:
+    #   이 버전은 /detect_mode를 사용해 모델을 전환하지 않음.
+    #   object_pose_transform_node가 trigger 종류에 따라
+    #   /object_poses 또는 /insert_poses를 수집함.
     #
     # 추가 publish fields:
     #   -> yaw_deg
     #   -> yaw_score
     #   -> yaw_source
-    #   -> center_source
-    #   -> pixel_center
-    #   -> seg_pixel_center
-    #   -> refined_pixel_center
-    #   -> position_pc_median
     # ============================================================
-    pose_publisher_newenw_node = Node(
+    pose_publisher_ob_in_node = Node(
         package='vision',
-        executable='pose_publisher_newenw',
-        name='pose_publisher_newenw',
+        executable='new_pose_publisher_ob_in',
+        name='new_pose_publisher_ob_in',
         output='screen',
     )
 
     # ============================================================
     # 2. Object Pose Transform
     #
+    # peg trigger:
+    #   /object_poses 수집
+    #   -> /vision/peg_targets publish
+    #
+    # hole trigger:
+    #   /insert_poses 수집
+    #   -> /vision/hole_targets publish
+    #
     # yaw 우선순위:
-    #   1. yaw_deg 존재 시 template/sliding yaw 사용
+    #   1. yaw_deg 존재 시 template yaw 사용
     #   2. 없으면 PCA orientation 기반 yaw 사용
     #
-    # position:
-    #   pose_publisher_newenw.py에서 publish한 position 사용
-    #
-    # insert끼리 동일 위치면
-    # confidence 높은 것만 유지
+    # 통합 모델 publisher는 /detect_mode를 직접 사용하지 않지만,
+    # 이 노드 내부 settle timing은 그대로 유지됨.
     # ============================================================
     object_pose_transform_params = {
         'handeye_result_path': handeye_result_path,
@@ -81,13 +85,16 @@ def generate_launch_description():
         'peg_output_topic': '/vision/peg_targets',
         'hole_output_topic': '/vision/hole_targets',
 
-        # object와 insert가 가까우면
-        # 같은 물체로 판단하여 insert 제거
-        'exclude_dist_mm': 30.0,
-
         # insert끼리 너무 가까우면
         # confidence 높은 것만 유지
         'insert_duplicate_dist_mm': 10.0,
+
+        # 여러 frame 수집
+        'collect_frames': 5,
+
+        # 통합 모델에서는 mode 전환은 없지만,
+        # trigger 직후 안정화 대기 용도로 유지
+        'detect_mode_settle_sec': 0.5,
     }
 
     object_pose_transform_node = Node(
@@ -166,7 +173,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        pose_publisher_newenw_node,
+        pose_publisher_ob_in_node,
 
         object_pose_transform_node,
 

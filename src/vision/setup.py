@@ -29,6 +29,8 @@ setup(
             'pose_publisher_yaw = vision.pose_publisher_yaw:main',
             'pose_publisher_newenw = vision.pose_publisher_newenw:main',
             'pose_publisher_ob_in = vision.pose_publisher_ob_in:main',
+            'new_pose_publisher_ob_in = vision.new_pose_publisher_ob_in:main',
+
         ],
     },
 )
