@@ -263,7 +263,7 @@ class PosePublisher(Node):
             self.models[mode] = YOLO(cfg["path"])
             self.get_logger().info(f"[{mode}] 모델 로드 완료: {cfg['path']}")
 
-        self.mode = "object"
+        self.mode = "insert"
 
         self.publishers_ = {
             mode: self.create_publisher(String, cfg["topic"], 10)

@@ -104,7 +104,7 @@ class ObjectPoseTransformNode(Node):
 
         self.declare_parameter("insert_duplicate_dist_mm", 12.0)
         self.declare_parameter("collect_frames", 5)
-        self.declare_parameter("detect_mode_settle_sec", 0.5)
+        self.declare_parameter("detect_mode_settle_sec", 0.3)
 
         self.class_to_id = {
             "cylinder": 0,

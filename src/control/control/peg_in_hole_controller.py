@@ -532,10 +532,15 @@ class PegInHoleController(Node):
             self.state = TaskState.INSPECT_PEGS
 
         elif self.state == TaskState.MOVE_TO_PEG_CAMERA_POSE_VIA_MID:
-            # 현재 j1~j6 저장 후 j1만 home_joint[0]으로 변경
-            self.motion.move_j1_only_and_wait(self.ctx.home_joint[0])
+            # J1은 경유 각도, J2~J6은 peg 카메라 자세로 먼저 정렬
+            via_joint = self.ctx.peg_camera_joint.copy()
+            via_joint[0] = self.ctx.home_joint[0]
+
+            self.motion.move_j_and_wait(via_joint)
             self.motion.move_j_and_wait(self.ctx.peg_camera_joint)
+
             self.state = TaskState.INSPECT_PEGS
+
 
         elif self.state == TaskState.INSPECT_PEGS:
             self.ctx.peg_targets = self.vision.inspect_pegs()
@@ -601,10 +606,15 @@ class PegInHoleController(Node):
             self.state = TaskState.MOVE_TO_HOLE_CAMERA_POSE
 
         elif self.state == TaskState.MOVE_TO_HOLE_CAMERA_POSE:
-            # 현재 j1~j6 저장 후 j1만 home_joint[0]으로 변경
-            self.motion.move_j1_only_and_wait(self.ctx.home_joint[0])
+            # J1은 경유 각도, J2~J6은 hole 카메라 자세로 먼저 정렬
+            via_joint = self.ctx.hole_camera_joint.copy()
+            via_joint[0] = self.ctx.home_joint[0]
+
+            self.motion.move_j_and_wait(via_joint)
             self.motion.move_j_and_wait(self.ctx.hole_camera_joint)
+
             self.state = TaskState.INSPECT_HOLES
+
 
         elif self.state == TaskState.INSPECT_HOLES:
             self.ctx.hole_targets = self.vision.inspect_holes()
@@ -627,6 +637,15 @@ class PegInHoleController(Node):
                 raise RuntimeError("No selected hole target")
 
             target_pose = self.ctx.current_hole_place_pose.copy()
+
+            # 네모 peg/object_id=1 삽입 시 x 방향으로 +2 mm 보정
+            if self.ctx.current_target_id == 1:
+                target_pose[0] += 2.0
+                self.get_logger().info(
+                    f"[PLACE OFFSET] square target. apply x offset +2.0 mm, "
+                    f"target x = {target_pose[0]:.2f}"
+                )
+
             target_pose[2] = self.ctx.place_approach_target_z_mm
 
             # hole 위 접근 위치로 이동
@@ -637,11 +656,22 @@ class PegInHoleController(Node):
             )
             self.state = TaskState.DESCEND_TO_HOLE
 
+
+
         elif self.state == TaskState.DESCEND_TO_HOLE:
             if self.ctx.current_hole_place_pose is None:
                 raise RuntimeError("No selected hole target")
 
             target_pose = self.ctx.current_hole_place_pose.copy()
+
+            # 네모 peg/object_id=1 삽입 시 x 방향으로 +2 mm 보정
+            if self.ctx.current_target_id == 1:
+                target_pose[0] += 2.0
+                self.get_logger().info(
+                    f"[PLACE OFFSET] square descend. apply x offset +2.0 mm, "
+                    f"target x = {target_pose[0]:.2f}"
+                )
+
             target_pose[2] = self.ctx.place_down_target_z_mm
 
             # peg를 hole에 넣기 직전, 삽입 높이로 하강

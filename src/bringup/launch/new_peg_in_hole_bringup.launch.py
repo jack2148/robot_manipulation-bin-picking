@@ -111,20 +111,20 @@ def generate_launch_description():
         'pick_up_target_z_mm': 200.0,
 
         'place_approach_target_z_mm': 108.0,
-        'place_down_target_z_mm': 94.0,
+        'place_down_target_z_mm': 90.0,
         'place_up_target_z_mm': 200.0,
 
         # ===== 속도/가속도 =====
-        'move_j_speed': 70.0,
-        'move_j_acc': 70.0,
+        'move_j_speed': 90.0,
+        'move_j_acc': 90.0,
 
-        'move_l_speed': 250.0,
+        'move_l_speed': 300.0,
         'move_l_acc': 450.0,
 
-        'approach_move_l_speed': 250.0,
+        'approach_move_l_speed': 300.0,
         'approach_move_l_acc': 450.0,
 
-        'descend_move_l_speed': 60.0,
+        'descend_move_l_speed': 70.0,
         'descend_move_l_acc': 120.0,
 
         # ===== 비전 토픽 =====
@@ -135,12 +135,12 @@ def generate_launch_description():
         'trigger_hole_topic': '/manipulation/trigger_hole',
 
         # ===== 비전 timing =====
-        'camera_settle_sec': 0.5,
+        'camera_settle_sec': 0.3,
         'vision_wait_timeout_sec': 5.0,
 
         # ===== 대기 =====
-        'grasp_wait_sec': 1.0,
-        'release_wait_sec': 1.0,
+        'grasp_wait_sec': 0.9,
+        'release_wait_sec': 0.1,
 
         'move_start_timeout_sec': 3.0,
     }
