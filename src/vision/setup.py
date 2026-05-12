@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'pose_publisher = vision.pose_publisher:main',
             'pose_publisher_yaw = vision.pose_publisher_yaw:main',
+            'pose_publisher_newenw = vision.pose_publisher_newenw:main',
         ],
     },
 )
