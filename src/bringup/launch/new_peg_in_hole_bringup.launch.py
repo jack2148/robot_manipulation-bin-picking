@@ -143,6 +143,8 @@ def generate_launch_description():
         'release_wait_sec': 0.1,
 
         'move_start_timeout_sec': 3.0,
+
+        'pause_before_peg_inspect': True,
     }
 
     peg_in_hole_controller_node = Node(

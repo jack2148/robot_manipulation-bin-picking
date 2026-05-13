@@ -4,14 +4,15 @@ from collections import Counter
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Empty
 
 try:
-    from .task_types import TaskContext, TaskState
+    from .task_types import TaskContext, TaskState, VisionTarget
     from .robot_motion import RobotMotion
     from .gripper_interface import GripperInterface
     from .vision_interface import VisionInterface
 except ImportError:  # direct script/debug execution support
-    from task_types import TaskContext, TaskState
+    from task_types import TaskContext, TaskState, VisionTarget
     from robot_motion import RobotMotion
     from gripper_interface import GripperInterface
     from vision_interface import VisionInterface
@@ -98,6 +99,8 @@ class PegInHoleController(Node):
                 ("trigger_peg_topic", "/manipulation/trigger_peg"),
                 ("trigger_hole_topic", "/manipulation/trigger_hole"),
                 ("camera_settle_sec", 0.5),
+                ("pause_before_peg_inspect", True),
+                ("manual_continue_topic", "/manual_continue"),
 
                 ("vision_wait_timeout_sec", 2.0),
                 ("vision_fixed_rx_deg", 90.0),
@@ -105,6 +108,7 @@ class PegInHoleController(Node):
 
                 # 방금 원위치에 되돌려놓은 peg를 한 번 제외할 때 쓰는 xy 거리 기준
                 ("skip_once_xy_tol_mm", 20.0),
+                
             ],
         )
 
@@ -118,6 +122,7 @@ class PegInHoleController(Node):
         trigger_peg_topic = self._get_str_param("trigger_peg_topic")
         trigger_hole_topic = self._get_str_param("trigger_hole_topic")
         camera_settle_sec = self._get_float_param("camera_settle_sec")
+        manual_continue_topic = self._get_str_param("manual_continue_topic")
 
         self.ctx = TaskContext(
             home_joint=self._get_array_param("home_joint", 6),
@@ -169,6 +174,16 @@ class PegInHoleController(Node):
             skip_once_xy_tol_mm=self._get_float_param("skip_once_xy_tol_mm"),
         )
 
+        self.manual_continue_received = False
+        self.pause_before_next_peg_inspect = False
+
+        self.manual_continue_sub = self.create_subscription(
+            Empty,
+            manual_continue_topic,
+            self.manual_continue_callback,
+            10,
+        )
+
         self.motion = RobotMotion(
             node=self,
             ctx=self.ctx,
@@ -201,6 +216,7 @@ class PegInHoleController(Node):
         self.get_logger().info(f"Hole target topic: {hole_targets_topic}")
         self.get_logger().info(f"Trigger peg topic: {trigger_peg_topic}")
         self.get_logger().info(f"Trigger hole topic: {trigger_hole_topic}")
+        self.get_logger().info(f"Manual continue topic: {manual_continue_topic}")
         self.get_logger().info(f"Camera settle sec: {camera_settle_sec}")
         self.get_logger().info(f"Use simulation mode: {self.use_simulation_mode}")
         self.get_logger().info(
@@ -246,6 +262,48 @@ class PegInHoleController(Node):
         return np.array(value, dtype=float)
 
     # ------------------------------------------------------------------
+    # manual continue helper
+    # ------------------------------------------------------------------
+    def manual_continue_callback(self, msg):
+        self.manual_continue_received = True
+        self.get_logger().info("[PAUSE] Manual continue signal received.")
+
+    def wait_for_space_before_peg_inspect(self):
+        pause_enabled = self._get_bool_param("pause_before_peg_inspect")
+
+        self.get_logger().info(
+            f"[PAUSE DEBUG] pause_before_peg_inspect = {pause_enabled}, "
+            f"pause_before_next_peg_inspect = {self.pause_before_next_peg_inspect}, "
+            f"active_jig_targets = {len(self.ctx.active_jig_targets)}"
+        )
+
+        if not pause_enabled:
+            self.get_logger().info(
+                "[PAUSE] Skip pause because pause_before_peg_inspect is False."
+            )
+            return
+
+        if not self.pause_before_next_peg_inspect:
+            self.get_logger().info(
+                "[PAUSE] Skip pause because previous jig layout is not fully filled."
+            )
+            return
+
+        self.manual_continue_received = False
+
+        self.get_logger().info(
+            "[PAUSE] Previous jig layout is fully filled. "
+            "Waiting for /manual_continue before inspecting pegs."
+        )
+
+        while rclpy.ok() and not self.manual_continue_received:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        self.pause_before_next_peg_inspect = False
+
+        self.get_logger().info("[PAUSE] Continue. Start peg inspection.")
+
+    # ------------------------------------------------------------------
     # selection helper
     # ------------------------------------------------------------------
     def is_skip_once_target(self, peg) -> bool:
@@ -285,21 +343,20 @@ class PegInHoleController(Node):
             f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
         )
 
-    def select_next_peg(self):
+    def select_next_peg(self) -> bool:
         if len(self.ctx.peg_targets) == 0:
             self.ctx.current_peg_index = -1
             self.ctx.current_peg_pick_pose = None
             self.ctx.current_target_id = None
-            return
+            return False
 
         selected_index = None
 
-        # remaining_jig_counts가 비어 있으면 새 사이클로 판단한다.
-        # 이때는 기존처럼 첫 번째 peg를 아무거나 잡되,
-        # 방금 원위치에 되돌려놓은 peg는 한 번만 제외한다.
-        if len(self.ctx.remaining_jig_counts) == 0:
+        # active_jig_targets가 비어 있으면 아직 현재 jig 세트를 모르는 상태다.
+        # 이때는 기존처럼 첫 번째 peg를 잡고, 이후 hole 촬영으로 jig 세트를 확정한다.
+        if len(self.ctx.active_jig_targets) == 0:
             self.get_logger().info(
-                "[SELECT] No remaining jig information. Select first non-skipped peg."
+                "[SELECT] No active jig layout. Select first non-skipped peg."
             )
 
             for i, peg in enumerate(self.ctx.peg_targets):
@@ -319,11 +376,10 @@ class PegInHoleController(Node):
 
             self._set_current_peg(selected_index)
             self.clear_skip_once()
-            return
+            return True
 
-        # 남은 jig 타입을 알고 있으면,
-        # 그 jig 타입에 대응되는 peg만 선택한다.
-        # 이때도 방금 되돌려놓은 peg는 한 번만 제외한다.
+        # active_jig_targets가 남아 있으면, 해당 jig 세트가 다 찰 때까지
+        # 저장된 남은 jig 타입에 맞는 peg만 선택한다.
         for i, peg in enumerate(self.ctx.peg_targets):
             if self.ctx.remaining_jig_counts.get(peg.object_id, 0) <= 0:
                 continue
@@ -337,16 +393,17 @@ class PegInHoleController(Node):
         if selected_index is not None:
             peg = self.ctx.peg_targets[selected_index]
             self.get_logger().info(
-                f"[SELECT] Select peg matched with remaining jig id = {peg.object_id} "
-                f"({self.vision.shape_name(peg.object_id)})"
+                f"[SELECT] Select peg matched with active jig id = {peg.object_id} "
+                f"({self.vision.shape_name(peg.object_id)}). "
+                f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
             )
             self._set_current_peg(selected_index)
             self.clear_skip_once()
-            return
+            return True
 
         # skip_once 때문에 선택할 peg가 없을 수도 있다.
         # 이 경우 한 번 제외 조건을 해제하고 다시 남은 jig 타입 기준으로 선택한다.
-        if self.ctx.skip_once_pick_pose is not None:
+        if self.ctx.skip_once_pick_id is not None:
             self.get_logger().warn(
                 "[SELECT] No candidate after skip_once. "
                 "Clear skip_once and retry selection."
@@ -360,64 +417,94 @@ class PegInHoleController(Node):
 
             if selected_index is not None:
                 self._set_current_peg(selected_index)
-                return
+                return True
 
-        # 남은 jig 타입에 해당하는 peg가 없으면,
-        # 현재 jig 세트로는 더 할 수 없다고 보고 새 사이클로 넘어간다.
-        # 이후 첫 번째 peg를 잡고 hole 촬영 결과에 따라 다시 판단한다.
+        # 여기까지 왔다는 것은 현재 저장된 jig 세트에 맞는 peg가 보이지 않는다는 의미다.
+        # 기존처럼 jig 정보를 지우고 아무 peg나 잡으면 같은 jig 세트를 끝까지 채우지 못하므로 멈춘다.
+        self.ctx.current_peg_index = -1
+        self.ctx.current_peg_pick_pose = None
+        self.ctx.current_target_id = None
+
         self.get_logger().warn(
-            "[SELECT] No peg matched with remaining jig ids. "
-            "Clear remaining_jig_counts and select first peg."
+            "[SELECT] No peg matched with active jig layout. "
+            f"Need jig ids = {dict(self.ctx.remaining_jig_counts)}. "
+            "Stop current task instead of clearing jig memory."
         )
-        self.ctx.remaining_jig_counts.clear()
-        self._set_current_peg(0)
+        return False
 
-    def _update_remaining_jig_counts_if_needed(self):
+    def _initialize_active_jig_layout_if_needed(self):
         """
-        remaining_jig_counts가 비어 있을 때만 현재 촬영된 hole 목록으로 초기화한다.
+        active_jig_targets가 비어 있을 때만 현재 촬영된 hole 목록을 저장한다.
 
         의미:
             - 비어 있음: 새 jig 세트 시작
-            - 비어 있지 않음: 이전에 본 jig 세트에서 아직 안 쓴 jig가 남아 있음
+            - 비어 있지 않음: 이전에 본 jig 세트가 아직 덜 찼으므로 위치/개수를 유지
+
+        예:
+            처음 hole 촬영 결과가 [네모, 동그라미, 네모, 십자가]이면
+            active_jig_targets에 4개 slot 위치를 모두 저장한다.
+            이후 4개가 모두 찰 때까지 이 목록에서 하나씩 제거하며 사용한다.
         """
-        if len(self.ctx.remaining_jig_counts) != 0:
+        if len(self.ctx.active_jig_targets) != 0:
+            self.get_logger().info(
+                "[JIG] Keep active jig layout. "
+                f"remaining slot count = {len(self.ctx.active_jig_targets)}, "
+                f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
+            )
             return
 
+        self.ctx.active_jig_targets = [
+            VisionTarget(
+                pose=target.pose.copy(),
+                object_id=target.object_id,
+            )
+            for target in self.ctx.hole_targets
+        ]
+
         self.ctx.remaining_jig_counts = Counter(
-            target.object_id for target in self.ctx.hole_targets
+            target.object_id for target in self.ctx.active_jig_targets
         )
 
         self.get_logger().info(
-            f"[JIG] Initialize remaining_jig_counts = "
-            f"{dict(self.ctx.remaining_jig_counts)}"
+            f"[JIG] Initialize active jig layout. "
+            f"slot_count = {len(self.ctx.active_jig_targets)}, "
+            f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
         )
+
+        for i, target in enumerate(self.ctx.active_jig_targets):
+            self.get_logger().info(
+                f"[JIG] slot[{i}] id = {target.object_id} "
+                f"({self.vision.shape_name(target.object_id)}), "
+                f"pose = {target.pose}"
+            )
 
     def select_next_hole(self) -> bool:
         if self.ctx.current_target_id is None:
             raise RuntimeError("No selected peg id. Cannot select matching hole.")
 
-        if len(self.ctx.hole_targets) == 0:
+        if len(self.ctx.active_jig_targets) == 0:
             self.ctx.current_hole_index = -1
             self.ctx.current_hole_place_pose = None
-            self.get_logger().warn("[SELECT] No available hole detected")
+            self.get_logger().warn("[SELECT] No available active jig slot")
             return False
 
         self.ctx.current_hole_index = -1
         self.ctx.current_hole_place_pose = None
 
-        for i, hole in enumerate(self.ctx.hole_targets):
+        for i, hole in enumerate(self.ctx.active_jig_targets):
             if hole.object_id == self.ctx.current_target_id:
                 self.ctx.current_hole_index = i
                 self.ctx.current_hole_place_pose = hole.pose.copy()
 
                 self.get_logger().info(
-                    f"[SELECT] matched hole index = {i}, "
+                    f"[SELECT] matched active jig slot index = {i}, "
                     f"id = {self.ctx.current_target_id} "
-                    f"({self.vision.shape_name(self.ctx.current_target_id)})"
+                    f"({self.vision.shape_name(self.ctx.current_target_id)}), "
+                    f"pose = {self.ctx.current_hole_place_pose}"
                 )
                 return True
 
-        available_ids = [target.object_id for target in self.ctx.hole_targets]
+        available_ids = [target.object_id for target in self.ctx.active_jig_targets]
 
         self.get_logger().warn(
             f"[SELECT] No matching hole found for selected peg id = "
@@ -509,8 +596,27 @@ class PegInHoleController(Node):
                 del self.ctx.peg_targets[self.ctx.current_peg_index]
 
         if self.ctx.current_hole_index >= 0:
-            if len(self.ctx.hole_targets) > self.ctx.current_hole_index:
-                del self.ctx.hole_targets[self.ctx.current_hole_index]
+            if len(self.ctx.active_jig_targets) > self.ctx.current_hole_index:
+                used_jig = self.ctx.active_jig_targets[self.ctx.current_hole_index]
+                self.get_logger().info(
+                    f"[JIG] Remove used active jig slot index = "
+                    f"{self.ctx.current_hole_index}, "
+                    f"id = {used_jig.object_id} "
+                    f"({self.vision.shape_name(used_jig.object_id)})"
+                )
+                del self.ctx.active_jig_targets[self.ctx.current_hole_index]
+
+        if len(self.ctx.active_jig_targets) == 0:
+            self.ctx.remaining_jig_counts.clear()
+            self.ctx.hole_targets = []
+            self.pause_before_next_peg_inspect = True
+            self.get_logger().info(
+                "[JIG] Active jig layout is fully filled. "
+                "Next cycle will inspect new peg/jig positions."
+            )
+            self.get_logger().info(
+                "[PAUSE] Pause is armed for the next peg inspection."
+            )
 
         self.clear_current_task()
         self.clear_recovery_pose()
@@ -541,16 +647,21 @@ class PegInHoleController(Node):
 
             self.state = TaskState.INSPECT_PEGS
 
-
         elif self.state == TaskState.INSPECT_PEGS:
+            self.wait_for_space_before_peg_inspect()
             self.ctx.peg_targets = self.vision.inspect_pegs()
 
             if len(self.ctx.peg_targets) == 0:
                 self.get_logger().info("[INFO] No peg remaining")
                 self.state = TaskState.RETURN_HOME
             else:
-                self.select_next_peg()
-                self.state = TaskState.MOVE_TO_TARGET_PEG
+                if self.select_next_peg():
+                    self.state = TaskState.MOVE_TO_TARGET_PEG
+                else:
+                    self.get_logger().warn(
+                        "[INFO] No peg matched with remembered jig layout"
+                    )
+                    self.state = TaskState.RETURN_HOME
 
         elif self.state == TaskState.MOVE_TO_TARGET_PEG:
             if self.ctx.current_peg_pick_pose is None:
@@ -615,11 +726,16 @@ class PegInHoleController(Node):
 
             self.state = TaskState.INSPECT_HOLES
 
-
         elif self.state == TaskState.INSPECT_HOLES:
-            self.ctx.hole_targets = self.vision.inspect_holes()
-
-            self._update_remaining_jig_counts_if_needed()
+            if len(self.ctx.active_jig_targets) == 0:
+                self.ctx.hole_targets = self.vision.inspect_holes()
+                self._initialize_active_jig_layout_if_needed()
+            else:
+                self.get_logger().info(
+                    "[JIG] Use remembered active jig layout without refreshing hole positions. "
+                    f"remaining slot count = {len(self.ctx.active_jig_targets)}, "
+                    f"remaining_jig_counts = {dict(self.ctx.remaining_jig_counts)}"
+                )
 
             matched = self.select_next_hole()
 
@@ -655,8 +771,6 @@ class PegInHoleController(Node):
                 acc=self.ctx.approach_move_l_acc,
             )
             self.state = TaskState.DESCEND_TO_HOLE
-
-
 
         elif self.state == TaskState.DESCEND_TO_HOLE:
             if self.ctx.current_hole_place_pose is None:
@@ -814,3 +928,21 @@ class PegInHoleController(Node):
                 self.gripper.stop()
             except Exception:
                 pass
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = PegInHoleController()
+
+    try:
+        node.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

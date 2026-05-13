@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'peg_in_hole_controller = control.main:main',
+            'keyboard_continue_node = control.keyboard_continue_node:main',
         ],
     },
 )

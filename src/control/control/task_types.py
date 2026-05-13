@@ -128,8 +128,13 @@ class TaskContext:
     current_target_id: int | None = None
 
     # ===== jig 사용 현황 =====
+    # 현재 채우고 있는 jig 세트의 남은 slot 목록.
+    # 같은 모양이 여러 개 있어도 각 slot의 위치를 개별적으로 기억한다.
+    # 이 목록이 빌 때까지 jig 위치/개수는 새로 갱신하지 않는다.
+    active_jig_targets: list[VisionTarget] = field(default_factory=list)
+
     # 아직 사용하지 않은 jig 타입별 개수.
-    # 비어 있으면 새 사이클로 보고 첫 번째 peg를 아무거나 선택한다.
+    # active_jig_targets에서 빠르게 peg 타입을 고르기 위한 보조 정보다.
     remaining_jig_counts: Counter = field(default_factory=Counter)
 
     # ===== 예외 복구용 데이터 =====
