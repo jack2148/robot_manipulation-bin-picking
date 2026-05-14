@@ -3,7 +3,16 @@ rm -rf build/ install/ log/
 colcon build --symlink-install --packages-select vision calib control bringup
 source install/setup.bash
 
+
+- 터미널1
 ros2 launch bringup peg_in_hole_bringup_yaw.launch.py
+
+- 터미널2
+python3 src/robot_ex_2026/robot_ex_2026/grip_current.py 
+
+- 터미널3
+ros2 run control keyboard_continue_node
+
 """
 
 from launch import LaunchDescription
